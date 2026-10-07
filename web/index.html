@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocationSpoof</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="panel">
+    <header class="panel-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>LocationSpoof</h1>
+      </div>
+      <button id="units-toggle" class="chip" title="Switch units">mph</button>
+    </header>
+
+    <div id="server-banner" class="banner hidden"></div>
+
+    <!-- Device -->
+    <section class="card" id="device-card">
+      <div class="card-title">
+        <h2>Device</h2>
+        <button id="refresh-devices" class="icon-btn" title="Refresh">↻</button>
+      </div>
+      <select id="device-select" class="hidden"></select>
+      <div id="device-empty" class="muted">
+        Looking for devices… Plug your iPhone in with a cable and unlock it.
+      </div>
+      <div id="device-info" class="hidden">
+        <div class="device-row">
+          <div>
+            <div id="device-name" class="device-name"></div>
+            <div id="device-meta" class="muted small"></div>
+          </div>
+          <div id="device-badges" class="badges"></div>
+        </div>
+        <ul id="device-steps" class="steps"></ul>
+        <div id="device-status" class="status-line hidden"></div>
+        <div id="device-actions" class="btn-row"></div>
+        <details id="device-log" class="device-log hidden">
+          <summary id="device-log-summary">Connection log</summary>
+          <ul id="device-log-list"></ul>
+        </details>
+      </div>
+    </section>
+
+    <!-- Location -->
+    <section class="card">
+      <div class="card-title"><h2>Location</h2></div>
+      <div class="search" id="main-search">
+        <input id="search-input" type="search" placeholder="Search an address or place" autocomplete="off">
+        <ul class="search-results hidden"></ul>
+      </div>
+      <div class="spoof-readout">
+        <div>
+          <div class="muted small">Phone is reporting</div>
+          <div id="spoof-state" class="spoof-state">Real location</div>
+        </div>
+        <button id="clear-location" class="btn danger-ghost" disabled>Restore real</button>
+      </div>
+      <div class="nudge">
+        <label class="muted small" for="nudge-step">Arrow keys / WASD move by</label>
+        <select id="nudge-step">
+          <option value="2">2 m</option>
+          <option value="5">5 m</option>
+          <option value="10" selected>10 m</option>
+          <option value="25">25 m</option>
+          <option value="100">100 m</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Saved places -->
+    <section class="card">
+      <div class="card-title">
+        <h2>Saved places</h2>
+        <span id="places-count" class="muted small"></span>
+      </div>
+      <ul id="places-list" class="places"></ul>
+      <div id="places-empty" class="muted small">
+        Search for an address or click the map, then choose <b>Save</b>.
+      </div>
+    </section>
+
+    <!-- Route -->
+    <section class="card">
+      <div class="card-title">
+        <h2>Route</h2>
+        <button id="clear-route" class="link-btn hidden">Clear</button>
+      </div>
+      <div class="route-inputs">
+        <div class="route-dots" aria-hidden="true"><span class="rd start"></span><span class="rd-line"></span><span class="rd end"></span></div>
+        <div class="route-fields">
+          <div class="search has-locate" id="start-search">
+            <input id="start-input" type="search" placeholder="Start: address, place, or current location" autocomplete="off">
+            <button id="use-current-location" class="locate-btn" type="button" title="Start from my location" aria-label="Start from my location">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+                <path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3"/>
+              </svg>
+            </button>
+            <ul class="search-results hidden"></ul>
+          </div>
+          <div class="search" id="dest-search">
+            <input id="dest-input" type="search" placeholder="Destination" autocomplete="off">
+            <ul class="search-results hidden"></ul>
+          </div>
+        </div>
+        <button id="swap-route" class="icon-btn swap" title="Swap start and destination">⇅</button>
+      </div>
+
+      <div class="field">
+        <span class="field-label">Travel by</span>
+        <div class="segmented" id="travel-mode">
+          <button data-value="auto" class="active">Drive</button>
+          <button data-value="bicycle">Bike</button>
+          <button data-value="pedestrian">Walk</button>
+        </div>
+      </div>
+
+      <div class="field" id="speed-mode-field">
+        <span class="field-label">Speed</span>
+        <div class="segmented" id="speed-mode">
+          <button data-value="limit" class="active" title="Drive at posted speed limits (guessed from road type where none is posted)">Speed limits</button>
+          <button data-value="traffic" title="Valhalla's realistic estimate, slower in town">Realistic</button>
+          <button data-value="fixed">Fixed</button>
+        </div>
+      </div>
+
+      <div class="field" id="limit-factor-field">
+        <label class="field-label" for="limit-factor">Percent of limit <b id="limit-factor-label">100%</b></label>
+        <input id="limit-factor" type="range" min="70" max="130" step="5" value="100">
+      </div>
+
+      <div class="field hidden" id="fixed-speed-field">
+        <label class="field-label" for="fixed-speed">Fixed speed (<span class="unit-label">mph</span>)</label>
+        <input id="fixed-speed" type="number" min="1" max="200" step="1" value="3">
+      </div>
+
+      <div id="route-hint" class="muted small route-hint">Pick a start and destination to see the route.</div>
+
+      <div id="route-summary" class="route-summary hidden">
+        <div class="stats">
+          <div><span id="route-distance" class="stat"></span><span class="muted small">distance</span></div>
+          <div><span id="route-duration" class="stat"></span><span class="muted small">duration</span></div>
+          <div><span id="route-coverage" class="stat"></span><span class="muted small">posted limits</span></div>
+        </div>
+        <div class="save-route">
+          <button id="save-route-btn" class="btn small" type="button">Save route</button>
+          <form id="save-route-form" class="inline-form hidden">
+            <input id="save-route-name" type="text" placeholder="Name this route" maxlength="120" autocomplete="off">
+            <button class="btn primary small" type="submit">Save</button>
+            <button class="btn small" type="button" id="save-route-cancel">Cancel</button>
+          </form>
+        </div>
+        <div class="playback">
+          <div class="btn-row">
+            <button id="play" class="btn primary">▶ Play</button>
+            <button id="pause" class="btn hidden">❚❚ Pause</button>
+            <button id="stop" class="btn" disabled>■ Stop</button>
+            <label class="check"><input id="loop" type="checkbox"> Loop</label>
+          </div>
+          <div class="field">
+            <label class="field-label" for="speed-scale">Playback speed <b id="speed-scale-label">1×</b></label>
+            <input id="speed-scale" type="range" min="0.5" max="5" step="0.25" value="1">
+          </div>
+          <div class="progress"><div id="progress-bar"></div></div>
+          <div class="live">
+            <span id="live-speed">-</span>
+            <span id="live-remaining" class="muted small"></span>
+          </div>
+          <div id="playback-error" class="status-line error hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Saved routes -->
+    <section class="card">
+      <div class="card-title">
+        <h2>Saved routes</h2>
+        <span id="saved-routes-count" class="muted small"></span>
+      </div>
+      <ul id="saved-routes-list" class="places"></ul>
+      <div id="saved-routes-empty" class="muted small">
+        Build a route, then click <b>Save route</b>. Saved routes load and play without internet.
+      </div>
+    </section>
+
+    <footer class="panel-footer muted small">
+      Map data © OpenStreetMap contributors · Search: Photon · Routing: Valhalla (FOSSGIS)
+    </footer>
+  </aside>
+
+  <main id="map"></main>
+  <div id="map-legend" class="legend hidden"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
