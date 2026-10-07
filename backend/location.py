@@ -180,6 +180,22 @@ class LocationSession:
         await self._close()
 
 
+class PreviewSession:
+    """Stands in for a device during route preview: records positions, sends nothing to a phone."""
+
+    connected = True
+    error = None
+
+    def __init__(self) -> None:
+        self.last: Optional[tuple[float, float]] = None
+
+    async def set(self, lat: float, lng: float) -> None:
+        self.last = (lat, lng)
+
+    async def clear(self) -> None:
+        self.last = None
+
+
 class LocationService:
     def __init__(self, devices: DeviceManager):
         self.devices = devices

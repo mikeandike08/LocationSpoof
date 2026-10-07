@@ -6,6 +6,7 @@ Spoof your iPhone's GPS location from your Mac using a local web page. It works 
 - **Saved places**: save addresses and jump back to them. Search results are ranked by distance from you.
 - **GPS-style routes**: type a start and destination. The phone drives the route along real roads at each road's **posted speed limit**, or a guessed limit where none is posted. Walk and bike modes use a fixed speed.
 - **Saved routes**: saved with the full road geometry and speeds, so they load and play **without internet**. Map areas you've viewed are cached too.
+- **Route preview**: play a route on the map without moving the phone (automatic when no iPhone is connected), at up to 20× speed, to check a route before driving it for real.
 - **Arrow keys / WASD** nudge the location a few meters at a time.
 
 It uses Apple's developer location simulation, the same mechanism Xcode uses, through [pymobiledevice3](https://github.com/doronz88/pymobiledevice3).

@@ -10,14 +10,15 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 from backend.geo import LatLng, Segment, bearing_deg, build_segments, lerp
-from backend.location import LocationSession
+from backend.location import LocationSession, PreviewSession
 
 logger = logging.getLogger("locationspoof.playback")
 
 TICK_S = 1.0  # iOS location updates are ~1 Hz; faster ticks just add load
+PREVIEW_TICK_S = 0.25  # map-only preview: smoother animation, no phone to load
 ACCEL_MPS2 = 2.0
 DECEL_MPS2 = 2.5
 
@@ -35,6 +36,7 @@ class PlaybackStatus:
     segment_index: int = 0
     loop: bool = False
     error: Optional[str] = None
+    preview: bool = False  # playing on the map only; no phone is being updated
     waiting: bool = False  # device not accepting updates; the route is holding position
 
     def to_json(self) -> dict:
@@ -52,6 +54,7 @@ class PlaybackStatus:
             "loop": self.loop,
             "error": self.error,
             "waiting": self.waiting,
+            "preview": self.preview,
         }
 
 
@@ -60,7 +63,7 @@ class RoutePlayer:
         self.task: Optional[asyncio.Task] = None
         self.status = PlaybackStatus()
         self.segments: list[Segment] = []
-        self.session: Optional[LocationSession] = None
+        self.session: Optional[Union[LocationSession, PreviewSession]] = None
         self.speed_scale = 1.0
         self.jitter = 0.0
         self._paused = asyncio.Event()
@@ -68,7 +71,7 @@ class RoutePlayer:
 
     def start(
         self,
-        session: LocationSession,
+        session: Union[LocationSession, PreviewSession],
         points: list[LatLng],
         speeds_mps: list[float],
         loop: bool = False,
@@ -83,7 +86,13 @@ class RoutePlayer:
         self.speed_scale = speed_scale
         self.jitter = jitter
         total = sum(s.length_m for s in self.segments)
-        self.status = PlaybackStatus(state="playing", total_m=total, loop=loop, position=self.segments[0].start)
+        self.status = PlaybackStatus(
+            state="playing",
+            total_m=total,
+            loop=loop,
+            position=self.segments[0].start,
+            preview=isinstance(session, PreviewSession),
+        )
         self._paused.set()
         self.task = asyncio.create_task(self._run())
 
@@ -107,10 +116,12 @@ class RoutePlayer:
             self.status.speed_kmh = 0
 
     def set_speed_scale(self, scale: float) -> None:
-        self.speed_scale = max(0.1, min(scale, 10.0))
+        self.speed_scale = max(0.1, min(scale, 20.0))
 
+    # Speeds are real road speeds. speed_scale compresses time instead (2x = the route plays in half
+    # the time), so acceleration and braking stay realistic at any playback speed.
     def _target_mps(self, index: int) -> float:
-        return self.segments[index].speed_mps * self.speed_scale
+        return self.segments[index].speed_mps
 
     def _braking_target(self, index: int, offset_m: float, speed: float) -> float:
         """Lowest speed we must already be at, given slower segments within braking distance ahead."""
@@ -128,10 +139,11 @@ class RoutePlayer:
         return target
 
     def _remaining_seconds(self, index: int, offset_m: float) -> float:
+        """Wall-clock seconds left at the current playback speed."""
         remaining = (self.segments[index].length_m - offset_m) / max(self._target_mps(index), 0.3)
         for seg in self.segments[index + 1 :]:
-            remaining += seg.length_m / max(seg.speed_mps * self.speed_scale, 0.3)
-        return remaining
+            remaining += seg.length_m / max(seg.speed_mps, 0.3)
+        return remaining / self.speed_scale
 
     async def _send(self, pos: LatLng) -> bool:
         # A dropped connection mid-route shouldn't end playback: hold position until it's back.
@@ -152,6 +164,7 @@ class RoutePlayer:
         index, offset, speed = 0, 0.0, 0.0
         variance = 1.0
         last = time.monotonic()
+        tick = PREVIEW_TICK_S if st.preview else TICK_S
         try:
             await self.session.set(*self.segments[0].start)
             while True:
@@ -165,9 +178,9 @@ class RoutePlayer:
                 if not self._paused.is_set():
                     await self._paused.wait()
                     last = time.monotonic()
-                await asyncio.sleep(TICK_S)
+                await asyncio.sleep(tick)
                 now = time.monotonic()
-                dt = min(now - last, 3 * TICK_S)
+                dt = min(now - last, 3 * tick) * self.speed_scale  # simulated seconds
                 last = now
                 if not self._paused.is_set():
                     continue

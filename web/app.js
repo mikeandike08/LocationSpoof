@@ -320,7 +320,8 @@ function renderSpoofState(d) {
   label.textContent = active ? fmtCoord(loc.lat, loc.lng) : "Real location";
   if (active && d && !d.connected) label.textContent += " (re-applies when the iPhone reconnects)";
   $("#clear-location").disabled = !active;
-  if (state.playback.state !== "playing") setSpoofMarker(active ? loc.lat : null, active ? loc.lng : null);
+  if (state.playback.state !== "playing" || state.playback.preview) setSpoofMarker(active ? loc.lat : null, active ? loc.lng : null);
+  syncPreviewToggle();
 }
 
 $("#device-select").addEventListener("change", (e) => {
@@ -1109,6 +1110,63 @@ async function deleteSavedRoute(r) {
 // ---------- playback ----------
 
 let playbackTimer = null;
+let previewMarker = null;
+const PHONE_MAX_SCALE = 5;
+const PREVIEW_MAX_SCALE = 20;
+
+// Preview plays the route on the map only. It's forced on when no iPhone is connected.
+function previewMode() {
+  return $("#preview-mode").checked || !currentDevice()?.connected;
+}
+
+function syncPreviewToggle() {
+  const noPhone = !currentDevice()?.connected;
+  const box = $("#preview-mode");
+  const label = box.closest(".preview-toggle");
+  box.disabled = noPhone;
+  if (noPhone) box.checked = true;
+  else if (box.dataset.userSet !== "1") box.checked = false;
+  label.classList.toggle("locked", noPhone);
+  label.classList.toggle("on", box.checked);
+  $("#preview-note").textContent = noPhone
+    ? "No iPhone connected, so the route plays on the map only"
+    : "Play on the map without moving the phone";
+
+  // Faster playback is fine for a preview; keep the phone at realistic speeds.
+  const slider = $("#speed-scale");
+  const active = state.playback.state === "playing" || state.playback.state === "paused";
+  const max = (active ? state.playback.preview : box.checked) ? PREVIEW_MAX_SCALE : PHONE_MAX_SCALE;
+  if (Number(slider.max) !== max) {
+    slider.max = max;
+    if (Number(slider.value) > max) {
+      slider.value = max;
+      $("#speed-scale-label").textContent = `${max}×`;
+    }
+  }
+  if (!active) $("#play").textContent = box.checked ? "▶ Preview" : "▶ Play";
+}
+
+$("#preview-mode").addEventListener("change", (e) => {
+  e.target.dataset.userSet = "1";
+  syncPreviewToggle();
+});
+
+function setPreviewMarker(pos) {
+  if (!pos) {
+    if (previewMarker) { previewMarker.remove(); previewMarker = null; }
+    return;
+  }
+  if (!previewMarker) {
+    previewMarker = L.marker(pos, {
+      icon: L.divIcon({ className: "", html: '<div class="preview-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }),
+      zIndexOffset: 1100,
+      keyboard: false,
+    }).addTo(map);
+    previewMarker.bindTooltip("Preview position (not sent to the phone)", { direction: "top", offset: [0, -10] });
+  } else {
+    previewMarker.setLatLng(pos);
+  }
+}
 
 async function refreshPlayback() {
   try {
@@ -1119,7 +1177,7 @@ async function refreshPlayback() {
   renderPlayback();
   const active = state.playback.state === "playing" || state.playback.state === "paused";
   clearTimeout(playbackTimer);
-  if (active) playbackTimer = setTimeout(refreshPlayback, 1000);
+  if (active) playbackTimer = setTimeout(refreshPlayback, state.playback.preview ? 300 : 1000);
 }
 
 function renderPlayback() {
@@ -1127,22 +1185,30 @@ function renderPlayback() {
   const playing = p.state === "playing";
   const paused = p.state === "paused";
   $("#play").classList.toggle("hidden", playing);
-  $("#play").textContent = paused ? "▶ Resume" : "▶ Play";
+  $("#play").textContent = paused ? "▶ Resume" : previewMode() ? "▶ Preview" : "▶ Play";
+  $("#preview-mode").closest(".preview-toggle").style.pointerEvents = playing || paused ? "none" : "";
   $("#pause").classList.toggle("hidden", !playing);
   $("#stop").disabled = !(playing || paused);
   $("#progress-bar").style.width = `${Math.round((p.progress || 0) * 100)}%`;
 
+  const tag = p.preview ? "Preview · " : "";
   if (playing || paused) {
-    $("#live-speed").textContent = playing ? fmtSpeed(p.speed_kmh) : "Paused";
+    $("#live-speed").textContent = tag + (playing ? fmtSpeed(p.speed_kmh) : "Paused");
     $("#live-remaining").textContent = `${fmtDistance(Math.max(p.total_m - p.traveled_m, 0))} · ${fmtDuration(p.remaining_s)} left · target ${fmtSpeed(p.target_kmh)}`;
-    if (p.position) setSpoofMarker(p.position[0], p.position[1]);
+    if (p.position) {
+      if (p.preview) setPreviewMarker(p.position);
+      else setSpoofMarker(p.position[0], p.position[1]);
+    }
   } else if (p.state === "finished") {
-    $("#live-speed").textContent = "Arrived";
-    $("#live-remaining").textContent = "";
+    $("#live-speed").textContent = tag + "Arrived";
+    $("#live-remaining").textContent = p.preview ? "The phone wasn't moved." : "";
+    if (p.preview && p.position) setPreviewMarker(p.position);
   } else {
     $("#live-speed").textContent = "-";
     $("#live-remaining").textContent = "";
+    setPreviewMarker(null);
   }
+  syncPreviewToggle();
 
   const err = $("#playback-error");
   err.textContent = p.error || "";
@@ -1154,12 +1220,15 @@ $("#play").addEventListener("click", async () => {
     if (state.playback.state === "paused") {
       await api("/api/playback/resume", { method: "POST" });
     } else {
-      const d = requireDevice();
       if (!state.route) throw new Error("Build a route first");
+      const preview = previewMode();
+      const udid = preview ? null : requireDevice().udid;
+      setPreviewMarker(null);
       await api("/api/playback/start", {
         method: "POST",
         body: {
-          udid: d.udid,
+          udid,
+          preview,
           route_id: state.route.id,
           loop: $("#loop").checked,
           speed_scale: Number($("#speed-scale").value),
