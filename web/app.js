@@ -243,7 +243,7 @@ function renderDevices() {
 
   $("#device-empty").classList.toggle("hidden", !!d);
   $("#device-info").classList.toggle("hidden", !d);
-  if (!d) { renderSpoofState(null); return; }
+  if (!d) { renderSpoofState(null); renderWifiGuide(); return; }
 
   $("#device-name").textContent = d.name;
   $("#device-meta").textContent = [d.product_type, d.ios_version ? `iOS ${d.ios_version}` : null].filter(Boolean).join(" · ");
@@ -302,6 +302,7 @@ function renderDevices() {
   }
 
   renderSpoofState(d);
+  renderWifiGuide();
 }
 
 function renderSpoofState(d) {
@@ -315,6 +316,26 @@ function renderSpoofState(d) {
   if (state.playback.state !== "playing" || state.playback.preview) setSpoofMarker(active ? loc.lat : null, active ? loc.lng : null);
   syncPreviewToggle();
 }
+
+// Wi-Fi setup checklist: ticks off what's already done for the selected iPhone.
+function renderWifiGuide() {
+  const d = currentDevice();
+  const paired = !!d?.paired;
+  const wifiOn = !!d?.wifi_enabled;
+  const onWifi = !!d?.connections?.includes("Wi-Fi");
+  const onUsb = !!d?.connections?.includes("USB");
+  const mark = (id, done) => $(id).classList.toggle("done", done);
+  mark("#wifi-step-trust", paired);
+  mark("#wifi-step-enable", wifiOn);
+  mark("#wifi-step-network", onWifi);
+  mark("#wifi-step-unplug", onWifi && !onUsb);
+  const btn = $("#wifi-enable-btn");
+  btn.classList.toggle("hidden", !(paired && onUsb && !wifiOn));
+  btn.disabled = !!d?.busy;
+  $("#wifi-guide-title").textContent = onWifi ? "Connected over Wi-Fi ✓" : "Connect over Wi-Fi (no cable)";
+}
+
+$("#wifi-enable-btn").addEventListener("click", () => deviceAction("enable-wifi"));
 
 $("#device-select").addEventListener("change", (e) => {
   state.udid = e.target.value;
