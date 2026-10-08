@@ -32,7 +32,7 @@ class LocationSession:
         self.lock = asyncio.Lock()
         self.stack: Optional[contextlib.AsyncExitStack] = None
         self.sim = None
-        self.tunnel_key: Optional[tuple] = None
+        self.tunnel_key: Optional[int] = None
         self.last: Optional[tuple[float, float]] = None
         self.last_sent_at = 0.0
         self.error: Optional[str] = None
@@ -51,9 +51,8 @@ class LocationSession:
         if record:
             record.log(message, level)
 
-    def _current_tunnel_key(self) -> Optional[tuple]:
-        tunnel = self.devices.tunnel_for(self.udid)
-        return (tunnel.address, tunnel.port) if tunnel else None
+    def _current_tunnel_key(self) -> Optional[int]:
+        return self.devices.tunnel_key(self.udid)
 
     async def _open_dvt(self, stack: contextlib.AsyncExitStack, rsd) -> None:
         dvt = await stack.enter_async_context(DvtProvider(rsd))
@@ -67,8 +66,8 @@ class LocationSession:
         stack = contextlib.AsyncExitStack()
         try:
             if record.uses_tunnel:
-                rsd = await self.devices.open_rsd(self.udid)
-                stack.push_async_callback(rsd.close)
+                # The tunnel's RSD is shared and owned by the device manager: don't close it here.
+                rsd = await self.devices.get_rsd(self.udid)
                 try:
                     await self._open_dvt(stack, rsd)
                 except (InvalidServiceError, StartServiceError):
@@ -124,6 +123,10 @@ class LocationSession:
                 await self._close()
                 if isinstance(e, DeviceError):
                     break  # disconnected / no tunnel: retrying immediately won't help
+                record = self._record()
+                if record is not None and record.uses_tunnel:
+                    # The channel broke on a live tunnel: assume the tunnel is wedged and rebuild it.
+                    await self.devices.reset_tunnel(self.udid, explain(e))
         self.error = explain(last_error)
         if not self._was_broken:
             self._was_broken = True
@@ -131,6 +134,7 @@ class LocationSession:
         raise DeviceError(self.error) from last_error
 
     async def set(self, lat: float, lng: float) -> None:
+        self.devices.preferred_udid = self.udid
         async with self.lock:
             self.last = (lat, lng)
             await self._send(lat, lng)

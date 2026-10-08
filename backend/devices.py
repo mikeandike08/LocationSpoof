@@ -1,9 +1,14 @@
-"""Device discovery, preparation (pair / Developer Mode / disk image) and tunnels.
+"""Device discovery, preparation (pair / Developer Mode / disk image) and the developer tunnel.
 
-Tunnels come from pymobiledevice3's TunneldCore running inside this process. TunneldCore only
-reacts to usbmux plug/unplug events, so a tunnel that dies while the cable stays connected is
-never rebuilt. A watchdog here rescans every few seconds, rebuilds missing tunnels with backoff,
-replaces tunnels that stop answering, and records what happened so the UI can explain it.
+The iOS 17+ developer tunnel is pymobiledevice3's *userspace* tunnel (UserspaceRsdTunnel): a
+pure-Python network stack in this process, so it needs no root and no kernel utun device.
+We deliberately don't use TunneldCore: its monitors periodically suspend Apple's `remoted`
+daemon and race each other building tunnels, and its kernel tunnel writes packets with a
+blocking write on the event loop, which can freeze the whole server when the link stalls.
+
+Exactly one tunnel is kept (the userspace stack is process-global). A watchdog rescans every
+few seconds, keeps the tunnel up for the active device, rebuilds it with backoff when it dies,
+and records what happened so the UI can explain it.
 """
 
 import asyncio
@@ -19,9 +24,8 @@ from packaging.version import Version
 from pymobiledevice3 import usbmux
 from pymobiledevice3.exceptions import AlreadyMountedError, PyMobileDevice3Exception
 from pymobiledevice3.lockdown import create_using_usbmux
-from pymobiledevice3.remote.common import TunnelProtocol
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-from pymobiledevice3.remote.tunnel_service import CoreDeviceTunnelProxy
+from pymobiledevice3.remote.userspace_tunnel import UserspaceRsdTunnel
 from pymobiledevice3.services.amfi import AmfiService
 from pymobiledevice3.services.mobile_image_mounter import auto_mount
 
@@ -33,7 +37,7 @@ TUNNEL_MIN_VERSION = Version("17.0")
 INFO_TTL_S = 30
 SCAN_INTERVAL_S = 2.5
 FORGET_DISCONNECTED_S = 15 * 60
-RSD_CONNECT_TIMEOUT_S = 10
+TUNNEL_OPEN_TIMEOUT_S = 30
 
 
 def is_root() -> bool:
@@ -89,14 +93,18 @@ class DeviceRecord:
             self.events[0]["time"] = _clock()
             return
         self.events.appendleft({"time": _clock(), "msg": message, "level": level})
-        getattr(logger, "warning" if level != "info" else "info")(f"[{self.name or self.udid}] {message}")
+        log = logger.warning if level in ("warn", "error") else logger.info
+        log(f"[{self.name or self.udid}] {message}")
 
 
 class DeviceManager:
     def __init__(self) -> None:
         self.devices: dict[str, DeviceRecord] = {}
-        self.tunneld = None
-        self.tunneld_error: Optional[str] = None
+        self.tunnel: Optional[UserspaceRsdTunnel] = None
+        self.tunnel_udid: Optional[str] = None
+        self.tunnel_generation = 0  # bumps every time a new tunnel is opened
+        self._tunnel_lock = asyncio.Lock()
+        self.preferred_udid: Optional[str] = None  # device the user is working with
         self._jobs: dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
         self.usbmux_error: Optional[str] = None
@@ -104,19 +112,6 @@ class DeviceManager:
     # ---------- lifecycle ----------
 
     async def start(self) -> None:
-        if not is_root():
-            self.tunneld_error = "Not running as administrator. Start with ./run.sh"
-            logger.error(self.tunneld_error)
-        else:
-            try:
-                from pymobiledevice3.tunneld.server import TunneldCore
-
-                self.tunneld = TunneldCore()
-                self.tunneld.start()
-                logger.info("Tunnel manager started (USB + Wi-Fi)")
-            except Exception as e:
-                self.tunneld_error = f"Could not start the tunnel manager: {explain(e)}"
-                logger.exception(self.tunneld_error)
         self._watchdog = asyncio.create_task(self._watch())
 
     async def stop(self) -> None:
@@ -124,8 +119,8 @@ class DeviceManager:
             self._watchdog.cancel()
         for job in self._jobs.values():
             job.cancel()
-        if self.tunneld is not None:
-            await self.tunneld.close()
+        async with self._tunnel_lock:
+            await self._close_tunnel()
 
     # ---------- watchdog ----------
 
@@ -133,9 +128,9 @@ class DeviceManager:
         while True:
             try:
                 await self._scan()
-                if self.tunneld is not None:
-                    for record in list(self.devices.values()):
-                        await self._maintain_tunnel(record)
+                target = self._tunnel_target()
+                if target is not None:
+                    await self._maintain_tunnel(target)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -155,8 +150,6 @@ class DeviceManager:
         connections: dict[str, set[str]] = {}
         for dev in mux_devices:
             connections.setdefault(dev.serial, set()).add("USB" if dev.is_usb else "Wi-Fi")
-        for udid in self._tunnel_only_udids():
-            connections.setdefault(udid, set()).add("Wi-Fi")
 
         now = time.time()
         for udid, conns in connections.items():
@@ -184,98 +177,111 @@ class DeviceManager:
                 record.disconnected_at = now
                 record.tunnel_state = "none"
                 record.log(f"iPhone disconnected. {CABLE_HINT}", "error")
+                if self.tunnel_udid == udid:
+                    async with self._tunnel_lock:
+                        await self._close_tunnel()
             elif not record.busy and now - (record.disconnected_at or now) > FORGET_DISCONNECTED_S:
                 del self.devices[udid]
 
-    async def _maintain_tunnel(self, record: DeviceRecord) -> None:
-        if not record.connected or not record.paired or not record.uses_tunnel or record.busy:
-            return
-        if record.developer_mode is False:
-            return
+    def _tunnel_target(self) -> Optional[DeviceRecord]:
+        """The one device to keep a tunnel open for (the userspace stack allows only one)."""
+        candidates = [
+            r for r in self.devices.values()
+            if r.connected and r.paired and r.uses_tunnel and r.developer_mode is not False
+        ]
+        if not candidates:
+            return None
+        for r in candidates:
+            if r.udid == self.preferred_udid:
+                return r
+        for r in candidates:
+            if r.udid == self.tunnel_udid:
+                return r
+        return candidates[0]
 
-        if self.tunnel_for(record.udid) is not None:
-            if record.tunnel_state != "ok":
-                record.log("Developer tunnel connected", "ok")
+    async def _maintain_tunnel(self, record: DeviceRecord) -> None:
+        if record.busy or self._tunnel_lock.locked():
+            return
+        if self.tunnel_alive(record.udid):
+            return
+        if record.tunnel_state == "ok":
+            record.log("Developer tunnel dropped, rebuilding it", "warn")
+            record.tunnel_state = "connecting"
+            record.next_tunnel_try = 0
+        if time.monotonic() < record.next_tunnel_try:
+            return
+        with contextlib.suppress(DeviceError):
+            await self.get_rsd(record.udid)
+
+    # ---------- tunnel ----------
+
+    def tunnel_alive(self, udid: str) -> bool:
+        return self.tunnel is not None and self.tunnel_udid == udid and self.tunnel.rsd is not None
+
+    def tunnel_key(self, udid: str) -> Optional[int]:
+        """Changes whenever the device's tunnel is replaced (used to detect stale channels)."""
+        return self.tunnel_generation if self.tunnel_alive(udid) else None
+
+    async def _close_tunnel(self) -> None:
+        tunnel, self.tunnel, self.tunnel_udid = self.tunnel, None, None
+        if tunnel is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(tunnel.aclose(), timeout=10)
+
+    async def get_rsd(self, udid: str) -> RemoteServiceDiscoveryService:
+        """Return the shared RSD for this device, opening (or reopening) the tunnel if needed.
+
+        Callers must NOT close the returned RSD; the tunnel owns it.
+        """
+        async with self._tunnel_lock:
+            if self.tunnel_alive(udid):
+                return self.tunnel.rsd
+            record = self.devices.get(udid)
+            if record is None or not record.connected:
+                raise DeviceError(f"The iPhone is disconnected. {CABLE_HINT}")
+            if record.developer_mode is False:
+                raise DeviceError("Developer Mode is off on the iPhone.")
+            await self._close_tunnel()  # only one userspace tunnel per process
+
+            record.tunnel_state = "connecting"
+            record.tunnel_attempts += 1
+            # Back off 2, 4, 8 … 30 s between failed attempts.
+            record.next_tunnel_try = time.monotonic() + min(30, 2**record.tunnel_attempts)
+            tunnel = UserspaceRsdTunnel(serial=udid, autopair=False)
+            try:
+                rsd = await asyncio.wait_for(tunnel.aopen(), timeout=TUNNEL_OPEN_TIMEOUT_S)
+            except BaseException as e:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(tunnel.aclose(), timeout=10)
+                if isinstance(e, asyncio.CancelledError):
+                    raise
+                record.tunnel_state = "failed"
+                record.tunnel_error = explain(e)
+                record.log(f"Couldn't open the developer tunnel: {record.tunnel_error}", "error")
+                raise DeviceError(f"Couldn't open the developer tunnel: {record.tunnel_error}") from e
+
+            self.tunnel, self.tunnel_udid = tunnel, udid
+            self.tunnel_generation += 1
             record.tunnel_state = "ok"
             record.tunnel_attempts = 0
             record.tunnel_error = None
-            return
+            record.log("Developer tunnel connected", "ok")
+            return rsd
 
-        if record.tunnel_state == "ok":
-            record.log("Developer tunnel dropped, rebuilding it", "warn")
-            record.next_tunnel_try = 0
-        if self._tunnel_pending(record.udid) or time.monotonic() < record.next_tunnel_try:
-            if record.tunnel_state not in ("failed",):
+    async def reset_tunnel(self, udid: str, reason: str) -> None:
+        """Throw away a tunnel that stopped working; the next get_rsd() builds a fresh one."""
+        async with self._tunnel_lock:
+            if self.tunnel_udid != udid:
+                return
+            record = self.devices.get(udid)
+            if record:
+                record.log(f"Developer tunnel stopped responding ({reason}), replacing it", "warn")
                 record.tunnel_state = "connecting"
-            return
-        await self._spawn_tunnel(record)
-
-    async def _spawn_tunnel(self, record: DeviceRecord) -> None:
-        from pymobiledevice3.tunneld.server import TunnelTask
-
-        record.tunnel_attempts += 1
-        record.tunnel_state = "connecting"
-        # Back off 2, 4, 8 … 30 s between attempts.
-        record.next_tunnel_try = time.monotonic() + min(30, 2**record.tunnel_attempts)
-        try:
-            async with await create_using_usbmux(record.udid, autopair=False) as lockdown:
-                service = await CoreDeviceTunnelProxy.create(lockdown)
-        except Exception as e:
-            record.tunnel_state = "failed"
-            record.tunnel_error = explain(e)
-            record.log(f"Couldn't open the developer tunnel: {record.tunnel_error}", "error")
-            return
-        ident = f"locationspoof-{record.udid}"
-        self.tunneld.tunnel_tasks[ident] = TunnelTask(
-            udid=record.udid,
-            task=asyncio.create_task(self.tunneld.start_tunnel_task(ident, service, protocol=TunnelProtocol.TCP)),
-        )
-        if record.tunnel_attempts > 1:
-            record.log(f"Rebuilding developer tunnel (attempt {record.tunnel_attempts})", "warn")
-
-    def _tunnel_pending(self, udid: str) -> bool:
-        if self.tunneld is None:
-            return False
-        return any(
-            t.udid == udid and t.tunnel is None and not t.task.done() for t in self.tunneld.tunnel_tasks.values()
-        )
-
-    def _tunnel_only_udids(self) -> set[str]:
-        """Devices reachable over a Wi-Fi tunnel (bonjour/mobdev2 or usbmux 'Network').
-
-        USB tunnels are excluded so a USB-only phone isn't shown as also being on Wi-Fi.
-        """
-        if self.tunneld is None:
-            return set()
-        return {
-            t.udid
-            for key, t in self.tunneld.tunnel_tasks.items()
-            if t.udid and t.tunnel is not None and (key.startswith("mobdev2-") or key.endswith("-Network"))
-        }
-
-    # ---------- tunnels ----------
-
-    def tunnel_for(self, udid: str):
-        if self.tunneld is None:
-            return None
-        return self.tunneld.get_tunnel(udid)
-
-    def drop_tunnel(self, udid: str, reason: str) -> None:
-        """Discard a tunnel that exists but no longer answers; the watchdog builds a fresh one."""
-        if self.tunneld is None:
-            return
-        record = self.devices.get(udid)
-        if record:
-            record.log(f"Developer tunnel stopped responding ({reason}), replacing it", "warn")
-            record.tunnel_state = "connecting"
-            record.next_tunnel_try = 0
-        with contextlib.suppress(Exception):
-            self.tunneld.cancel(udid)
+                record.next_tunnel_try = 0
+            await self._close_tunnel()
 
     def _no_tunnel_error(self, udid: str) -> DeviceError:
         record = self.devices.get(udid)
-        if self.tunneld_error:
-            return DeviceError(self.tunneld_error)
         if record is None or not record.connected:
             return DeviceError(f"The iPhone is disconnected. {CABLE_HINT}")
         if record.developer_mode is False:
@@ -283,35 +289,6 @@ class DeviceManager:
         if record.tunnel_error:
             return DeviceError(f"Couldn't open the developer tunnel: {record.tunnel_error} Retrying automatically.")
         return DeviceError("The developer tunnel isn't up yet. Keep the iPhone unlocked; it's retrying automatically.")
-
-    async def wait_for_tunnel(self, udid: str, timeout: float = 20.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            tunnel = self.tunnel_for(udid)
-            if tunnel is not None:
-                return tunnel
-            record = self.devices.get(udid)
-            if record is not None and not record.connected and time.monotonic() > deadline - timeout + 3:
-                break  # unplugged: don't make the caller wait the full timeout
-            await asyncio.sleep(0.5)
-        return None
-
-    async def open_rsd(self, udid: str) -> RemoteServiceDiscoveryService:
-        for attempt in range(2):
-            tunnel = await self.wait_for_tunnel(udid)
-            if tunnel is None:
-                raise self._no_tunnel_error(udid)
-            rsd = RemoteServiceDiscoveryService((tunnel.address, tunnel.port))
-            try:
-                await asyncio.wait_for(rsd.connect(), timeout=RSD_CONNECT_TIMEOUT_S)
-                return rsd
-            except Exception as e:
-                with contextlib.suppress(Exception):
-                    await rsd.close()
-                self.drop_tunnel(udid, explain(e))
-                if attempt == 1:
-                    raise DeviceError(f"The developer tunnel isn't responding. {explain(e)}") from e
-        raise self._no_tunnel_error(udid)
 
     # ---------- info ----------
 
@@ -366,8 +343,6 @@ class DeviceManager:
         if r.developer_mode is False:
             return {"level": "warn", "message": "Developer Mode is off."}
         if r.uses_tunnel:
-            if self.tunneld_error:
-                return {"level": "error", "message": self.tunneld_error}
             if r.tunnel_state == "failed":
                 wait = max(0, int(r.next_tunnel_try - time.monotonic()))
                 return {"level": "error", "message": f"Developer tunnel failed: {r.tunnel_error} Retrying in {wait}s."}
@@ -378,7 +353,7 @@ class DeviceManager:
         return {"level": "ok", "message": f"Connected via {via}. Ready."}
 
     def describe(self, r: DeviceRecord) -> dict:
-        tunnel = self.tunnel_for(r.udid)
+        alive = self.tunnel_alive(r.udid)
         return {
             "udid": r.udid,
             "name": r.name or "iPhone",
@@ -391,7 +366,7 @@ class DeviceManager:
             "wifi_enabled": r.wifi_enabled,
             "image_mounted": r.image_mounted,
             "uses_tunnel": r.uses_tunnel,
-            "tunnel": {"address": tunnel.address, "port": tunnel.port} if tunnel else None,
+            "tunnel": {"type": "userspace"} if alive else None,
             "tunnel_state": r.tunnel_state if r.uses_tunnel else "n/a",
             "busy": r.busy,
             "error": r.error,
@@ -466,12 +441,10 @@ class DeviceManager:
 
         record.busy = "Opening developer tunnel"
         record.next_tunnel_try = 0
-        rsd = await self.open_rsd(udid)
-        try:
-            record.busy = "Mounting developer disk image (first time downloads ~20 MB)"
-            await self.mount(udid, rsd)
-        finally:
-            await rsd.close()
+        self.preferred_udid = udid
+        rsd = await self.get_rsd(udid)
+        record.busy = "Mounting developer disk image (first time downloads ~20 MB)"
+        await self.mount(udid, rsd)
 
     async def mount(self, udid: str, provider) -> None:
         record = self.get(udid)
