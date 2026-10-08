@@ -18,10 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend import geocode, tiles
-from backend.errors import explain
+from backend.errors import DeviceError, explain
 from backend.devices import DeviceManager, is_root
 from backend.geo import offset_m
-from backend.location import LocationService
+from backend.location import LocationService, PreviewSession
 from backend.places import PlacesStore, RoutesStore
 from backend.playback import RoutePlayer
 from backend.routing import FIXED_SPEEDS_KMH, Route, build_route
@@ -256,15 +256,16 @@ class RouteRequest(BaseModel):
 
 
 class PlaybackStart(BaseModel):
-    udid: str
+    udid: Optional[str] = None
     route_id: str
+    preview: bool = False  # play on the map only, without moving a phone
     loop: bool = False
-    speed_scale: float = Field(1.0, gt=0, le=10)
+    speed_scale: float = Field(1.0, gt=0, le=20)
     jitter: float = Field(0.05, ge=0, le=0.3)
 
 
 class SpeedScale(BaseModel):
-    speed_scale: float = Field(gt=0, le=10)
+    speed_scale: float = Field(gt=0, le=20)
 
 
 @app.get("/api/route/presets")
@@ -287,8 +288,15 @@ async def playback_start(body: PlaybackStart):
     route = routes.get(body.route_id)
     if route is None:
         raise HTTPException(404, "Route expired; build it again")
+    if not body.preview and body.speed_scale > 10:
+        raise HTTPException(400, "Speeds above 10x are only allowed in preview")
     try:
-        session = locations.session(body.udid)
+        if body.preview:
+            session = PreviewSession()
+        elif body.udid:
+            session = locations.session(body.udid)
+        else:
+            raise DeviceError("Connect an iPhone, or turn on preview to play the route without one.")
         player.start(session, route.points, route.segment_speeds_mps, body.loop, body.speed_scale, body.jitter)
     except Exception as e:
         raise _http_error(e)
