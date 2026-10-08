@@ -28,6 +28,7 @@
       <select id="device-select" class="hidden"></select>
       <div id="device-empty" class="muted">
         Looking for devices… Plug your iPhone in with a cable and unlock it.
+        Already set up for Wi-Fi? Unlock the iPhone on the same network as this Mac.
       </div>
       <div id="device-info" class="hidden">
         <div class="device-row">
@@ -45,6 +46,34 @@
           <ul id="device-log-list"></ul>
         </details>
       </div>
+      <details id="wifi-guide" class="wifi-guide">
+        <summary><span id="wifi-guide-title">Connect over Wi-Fi (no cable)</span></summary>
+        <ol class="wifi-steps">
+          <li id="wifi-step-trust">
+            <span class="check-dot"></span>
+            <div><b>Trust this Mac over USB, once.</b> Plug the iPhone in, unlock it, and click
+              <i>Trust &amp; prepare</i> (tap <i>Trust</i> on the phone).</div>
+          </li>
+          <li id="wifi-step-enable">
+            <span class="check-dot"></span>
+            <div><b>Turn on Wi-Fi connections</b> while the cable is still plugged in.
+              <button id="wifi-enable-btn" class="btn small hidden" type="button">Turn on Wi-Fi connections</button>
+            </div>
+          </li>
+          <li id="wifi-step-network">
+            <span class="check-dot"></span>
+            <div><b>Same Wi-Fi network.</b> Put the iPhone and this Mac on the same Wi-Fi.
+              Guest networks and some work/school networks block devices from seeing each other.</div>
+          </li>
+          <li id="wifi-step-unplug">
+            <span class="check-dot"></span>
+            <div><b>Unplug the cable.</b> Within a few seconds the iPhone shows a <span class="badge">Wi-Fi</span> badge here.
+              Keep it unlocked the first time; if it doesn't appear, wake the phone and click ↻.</div>
+          </li>
+        </ol>
+        <p class="muted small wifi-note">USB is the most reliable connection. Over Wi-Fi the iPhone can drop off when it
+          sleeps for a long time or changes networks. The app reconnects and re-applies your location automatically.</p>
+      </details>
     </section>
 
     <!-- Location -->
