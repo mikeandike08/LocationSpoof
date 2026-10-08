@@ -180,16 +180,8 @@ async function refreshStatus() {
   try {
     const s = await api("/api/status");
     const banner = $("#server-banner");
-    if (!s.root || s.tunnel_error) {
-      banner.innerHTML = "";
-      if (!s.root) {
-        banner.append(
-          "Not running as administrator.",
-          el("div", { class: "small" }, "iOS 17+ needs it for device tunnels. Quit and start with ", el("code", {}, "./run.sh"), "."),
-        );
-      } else {
-        banner.append(s.tunnel_error);
-      }
+    if (s.tunnel_error) {
+      banner.textContent = s.tunnel_error;
       banner.classList.remove("hidden");
     } else {
       banner.classList.add("hidden");

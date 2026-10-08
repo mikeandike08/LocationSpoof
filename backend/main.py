@@ -26,9 +26,52 @@ from backend.places import PlacesStore, RoutesStore
 from backend.playback import RoutePlayer
 from backend.routing import FIXED_SPEEDS_KMH, Route, build_route
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 for noisy in ("httpx", "pymobiledevice3", "zeroconf", "asyncio"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
+logger = logging.getLogger("locationspoof")
+
+
+def _setup_file_log() -> None:
+    """Also log to data/server.log (rotated) so problems can be diagnosed after the fact."""
+    from logging.handlers import RotatingFileHandler
+
+    from backend.places import DATA_DIR, _chown_to_invoking_user
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / "server.log"
+    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=2)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    _chown_to_invoking_user(path)
+
+
+def _raise_open_file_limit() -> None:
+    # macOS defaults to 256 open files, which a burst of device/tile connections can exhaust.
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = min(8192, hard) if hard != resource.RLIM_INFINITY else 8192
+    if soft < target:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (ValueError, OSError):
+            pass
+
+
+def _loop_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    # Log stray background errors once per kind instead of letting them spam the terminal.
+    exc = context.get("exception")
+    key = (type(exc).__name__, str(context.get("message")))
+    seen = _loop_exception_handler.__dict__.setdefault("seen", {})
+    seen[key] = seen.get(key, 0) + 1
+    count = seen[key]
+    if count == 1 or count in (10, 100, 1000):
+        logger.warning(
+            "background error (%sx): %s %s", count, context.get("message"), repr(exc) if exc else "",
+            exc_info=exc if count == 1 else None,
+        )
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -52,6 +95,7 @@ def _remember_route(route: Route, route_id: Optional[str] = None) -> str:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    asyncio.get_running_loop().set_exception_handler(_loop_exception_handler)
     await devices.start()
     yield
     player.stop()
@@ -73,7 +117,8 @@ def _http_error(e: Exception) -> HTTPException:
 
 @app.get("/api/status")
 async def status():
-    return {"root": is_root(), "tunnel_error": devices.tunneld_error}
+    # Root is no longer needed: the developer tunnel runs in userspace.
+    return {"root": is_root(), "admin_required": False, "tunnel_error": None}
 
 
 @app.get("/api/devices")
@@ -410,7 +455,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     # Localhost only: this process runs as root and controls your phone.
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    _setup_file_log()
+    _raise_open_file_limit()
+    # Standard asyncio loop (not uvloop): it's what pymobiledevice3's userspace tunnel is built on.
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", loop="asyncio")
 
 
 if __name__ == "__main__":

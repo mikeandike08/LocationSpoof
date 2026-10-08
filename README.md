@@ -17,7 +17,7 @@ It uses Apple's developer location simulation, the same mechanism Xcode uses, th
 ./run.sh
 ```
 
-The first run creates `.venv` and installs dependencies. It then asks for your Mac password, because creating device tunnels on iOS 17+ needs root, and opens http://127.0.0.1:8765.
+The first run creates `.venv` and installs dependencies, then opens http://127.0.0.1:8765. No administrator password is needed: the iOS 17+ developer tunnel runs inside the app (pymobiledevice3's userspace tunnel). Logs go to `data/server.log`.
 
 Press **Ctrl+C** to quit. Quitting restores the phone's real location.
 
@@ -66,13 +66,14 @@ Searching and building **new** routes need internet. Saved routes and saved plac
 ## Troubleshooting
 - **Install fails with `tapi error: unknown architecture`**: your Command Line Tools linker is older than the newest SDK. `setup.sh` retries the build against an older SDK automatically. Updating the Command Line Tools also fixes it.
 - **Device not listed**: unlock the phone, check that the cable carries data, and tap Trust.
-- **"No tunnel to the device yet"**: make sure you started the app with `./run.sh` (it uses sudo), the phone is unlocked, and Developer Mode is on.
+- **"The developer tunnel isn't up yet"**: keep the phone unlocked and check that Developer Mode is on; the app retries automatically.
+- **Page says it can't reach the server**: check that only one copy of LocationSpoof is running (an old `sudo` copy from an earlier version will fight over the phone). Quit all copies and start again with `./run.sh`. Details are in `data/server.log`.
 
 ## Project layout
 ```
 backend/
   main.py       FastAPI app + API routes
-  devices.py    discovery, pairing, Developer Mode, disk image, in-process tunnel manager
+  devices.py    discovery, pairing, Developer Mode, disk image, userspace developer tunnel
   location.py   holds the location channel open, auto-reconnects, re-applies the last fix
   playback.py   moves along a route with per-segment speeds
   routing.py    Valhalla/OSRM routing + speed limits
