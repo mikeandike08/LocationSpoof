@@ -119,7 +119,9 @@ class LocationSession:
 
     async def _send(self, lat: float, lng: float) -> None:
         last_error: Optional[BaseException] = None
-        for attempt in range(2):
+        # 1st try: the open channel. 2nd: a fresh channel on the same tunnel (fixes a one-off hiccup
+        # without the multi-second tunnel rebuild). 3rd: a rebuilt tunnel, if the 2nd failed too.
+        for attempt in range(3):
             try:
                 reason = self._stale_reason()
                 if reason:
@@ -145,8 +147,8 @@ class LocationSession:
                 if isinstance(e, DeviceError):
                     break  # disconnected / no tunnel: retrying immediately won't help
                 record = self._record()
-                if record is not None and record.uses_tunnel:
-                    # The channel broke on a live tunnel: assume the tunnel is wedged and rebuild it.
+                if attempt == 1 and record is not None and record.uses_tunnel:
+                    # A fresh channel on the same tunnel failed too: the tunnel itself is wedged.
                     await self.devices.reset_tunnel(self.udid, explain(e))
         self.error = explain(last_error)
         if not self._was_broken:

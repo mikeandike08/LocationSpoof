@@ -1275,6 +1275,43 @@ $("#speed-scale").addEventListener("input", (e) => {
   }
 });
 
+// ---------- keep the computer awake ----------
+
+state.keepAwake = { supported: true, enabled: false };
+
+async function refreshKeepAwake() {
+  try {
+    state.keepAwake = await api("/api/keep-awake");
+  } catch {
+    return;
+  }
+  renderKeepAwake();
+}
+
+function renderKeepAwake() {
+  const k = state.keepAwake;
+  const btn = $("#keep-awake-toggle");
+  btn.textContent = `☾ Keep computer awake: ${k.enabled ? "On" : "Off"}`;
+  btn.classList.toggle("on", k.enabled);
+  btn.disabled = !k.supported;
+  let text;
+  if (!k.supported) text = "Not available on this system.";
+  else if (k.error) text = k.error;
+  else if (k.enabled && k.active) text = "Awake now: the computer won't sleep on its own while the iPhone is spoofed. Closing a laptop lid still sleeps it.";
+  else if (k.enabled) text = "Kicks in while a location is spoofed or a route is running.";
+  else text = "If the computer sleeps, the iPhone goes back to its real location until it wakes.";
+  $("#keep-awake-status").textContent = text;
+}
+
+$("#keep-awake-toggle").addEventListener("click", async () => {
+  try {
+    state.keepAwake = await api("/api/keep-awake", { method: "POST", body: { enabled: !state.keepAwake.enabled } });
+    renderKeepAwake();
+  } catch (e) {
+    toast(e.message, "error");
+  }
+});
+
 // ---------- drive log ----------
 
 state.driveLog = { enabled: false };
@@ -1363,6 +1400,8 @@ setInterval(refreshDevices, 3000);
 setInterval(refreshStatus, 10000);
 refreshDriveLog();
 setInterval(refreshDriveLog, 5000);
+refreshKeepAwake();
+setInterval(refreshKeepAwake, 5000);
 
 // Start the map where it matters: the phone's spoofed spot, otherwise where you are.
 let userMovedMap = false;
