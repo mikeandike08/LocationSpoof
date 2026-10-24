@@ -179,6 +179,12 @@ map.on("click", (e) => showPointPopup({ lat: e.latlng.lat, lng: e.latlng.lng }))
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
+    if (state.alertActive.has(SERVER_KEY)) {
+      serverBack(); // reachable again after an outage
+      connectAlertStream();
+    } else if (window.EventSource && !alertStreamHealthy() && !alertRetryTimer) {
+      connectAlertStream();
+    }
     const banner = $("#server-banner");
     if (s.tunnel_error) {
       banner.textContent = s.tunnel_error;
@@ -190,6 +196,7 @@ async function refreshStatus() {
     const banner = $("#server-banner");
     banner.textContent = "Can't reach the LocationSpoof server. Is it running?";
     banner.classList.remove("hidden");
+    checkServerDown();
   }
 }
 
@@ -198,6 +205,7 @@ async function refreshDevices() {
     state.devices = await api("/api/devices");
   } catch (e) {
     state.devices = [];
+    checkServerDown(); // polled every 3 s, so a dead app is noticed quickly
   }
   if (!currentDevice() && state.devices.length) state.udid = state.devices[0].udid;
   if (state.udid) localStorage.setItem("udid", state.udid);
@@ -1369,6 +1377,340 @@ $("#drive-log-toggle").addEventListener("click", async () => {
   }
 });
 
+// ---------- alerts (sound + screen-edge flash for critical moments) ----------
+
+state.alertSettings = { sound: false, flash: false, recovery_chime: true, volume: 0.7 };
+state.alertActive = new Map(); // "udid:problem" -> the alert that raised it (still ongoing)
+state.alertDismissed = new Set(); // ongoing problems the user acknowledged (edges stop pulsing)
+let audioCtx = null;
+let lastAlertId = 0;
+let alertBarTimer = null;
+const SERVER_KEY = "local:server";
+
+const alertsOn = () => state.alertSettings.sound || state.alertSettings.flash;
+const alertKey = (a) => `${a.udid || "local"}:${a.problem || a.resolves || a.kind}`;
+
+// Browsers only allow sound after the page has been clicked or typed in once.
+function audio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    audioCtx = new AC();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume().then(renderAlertsControl).catch(() => {});
+  return audioCtx;
+}
+
+for (const ev of ["pointerdown", "keydown"]) {
+  document.addEventListener(ev, () => {
+    if (state.alertSettings.sound && audioCtx?.state !== "running") {
+      audio();
+      renderAlertsControl();
+    }
+  }, { passive: true });
+}
+
+function tone(ctx, freq, start, dur, type, level) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const peak = Math.max(level * state.alertSettings.volume, 0.0002);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(peak, start + 0.012);
+  gain.gain.setValueAtTime(peak, start + dur * 0.7);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(start);
+  osc.stop(start + dur + 0.02);
+}
+
+// Urgent two-tone alarm, three pulses, twice (~1.7 s).
+function playAlarm() {
+  const ctx = audio();
+  if (!ctx || state.alertSettings.volume <= 0) return;
+  const t = ctx.currentTime + 0.03;
+  for (let round = 0; round < 2; round++) {
+    for (let i = 0; i < 3; i++) {
+      const s = t + round * 0.95 + i * 0.24;
+      tone(ctx, 988, s, 0.11, "square", 0.22);
+      tone(ctx, 740, s + 0.11, 0.1, "square", 0.22);
+    }
+  }
+}
+
+// Soft rising chime for "it's fixed".
+function playChime() {
+  const ctx = audio();
+  if (!ctx || state.alertSettings.volume <= 0) return;
+  const t = ctx.currentTime + 0.03;
+  [659, 880, 1319].forEach((f, i) => tone(ctx, f, t + i * 0.13, 0.32, "sine", 0.3));
+}
+
+function flashEdges(kind) {
+  if (!state.alertSettings.flash) return;
+  const el = $("#alert-flash");
+  el.classList.remove("burst", "recovered");
+  void el.offsetWidth; // restart the animation
+  el.classList.add(kind === "recovered" ? "recovered" : "burst");
+  // animationend doesn't fire while the tab is hidden (animations are paused), so clean up on a timer too.
+  clearTimeout(flashEdges.timer);
+  flashEdges.timer = setTimeout(() => el.classList.remove("burst", "recovered"), 2600);
+}
+
+$("#alert-flash").addEventListener("animationend", (e) => {
+  if (e.animationName === "edge-burst" || e.animationName === "edge-ok") e.target.classList.remove("burst", "recovered");
+});
+
+// Keep the edges glowing (and the tab title flagged) while a problem is still ongoing.
+function syncActiveAlerts() {
+  const ongoing = [...state.alertActive.keys()].filter((k) => !state.alertDismissed.has(k));
+  $("#alert-flash").classList.toggle("active", state.alertSettings.flash && ongoing.length > 0);
+  document.title = state.alertActive.size ? "⚠ LocationSpoof" : "LocationSpoof";
+}
+
+function showAlertBar(alert) {
+  const bar = $("#alert-bar");
+  const recovered = alert.level === "recovered";
+  clearTimeout(alertBarTimer);
+  bar.classList.toggle("recovered", recovered);
+  $("#alert-bar-title").textContent = `${alert.title}${alert.time ? ` · ${alert.time}` : ""}`;
+  $("#alert-bar-message").textContent = alert.message;
+  bar.querySelector(".alert-bar-icon").textContent = recovered ? "✓" : "⚠";
+  bar.classList.remove("hidden");
+  // A recovery note clears itself, unless some other problem is still ongoing.
+  if (recovered) {
+    alertBarTimer = setTimeout(() => {
+      const other = [...state.alertActive.values()].find((a) => !state.alertDismissed.has(alertKey(a)));
+      if (other) showAlertBar(other);
+      else bar.classList.add("hidden");
+    }, 6000);
+  }
+}
+
+$("#alert-bar-dismiss").addEventListener("click", () => {
+  for (const key of state.alertActive.keys()) state.alertDismissed.add(key);
+  $("#alert-bar").classList.add("hidden");
+  syncActiveAlerts();
+});
+
+function handleAlert(alert, { replay = false } = {}) {
+  if (alert.id) lastAlertId = Math.max(lastAlertId, alert.id);
+  const key = alertKey(alert);
+  if (alert.level === "critical" && alert.problem) {
+    state.alertActive.set(key, alert);
+    state.alertDismissed.delete(key);
+  } else if (alert.level === "recovered") {
+    state.alertActive.delete(key);
+    state.alertDismissed.delete(key);
+  }
+  showAlertBar(alert);
+  syncActiveAlerts();
+  if (!replay) {
+    if (alert.level === "critical") {
+      if (state.alertSettings.sound && !alert.quiet) playAlarm();
+      flashEdges("critical");
+    } else if (alert.level === "recovered") {
+      if (state.alertSettings.sound && state.alertSettings.recovery_chime) playChime();
+      flashEdges("recovered");
+    }
+  }
+  if (alert.udid) refreshDevices();
+}
+
+// The page itself losing the server (the app quit or froze) is critical too. Detected by the status
+// check rather than the alert stream: a stream can look open even though the app behind it is gone.
+let serverCheck = null;
+let serverDownPoll = null;
+function checkServerDown() {
+  if (serverCheck) return;
+  serverCheck = (async () => {
+    try {
+      await api("/api/status");
+      if (!alertStreamHealthy()) {
+        clearTimeout(alertRetryTimer);
+        alertRetryTimer = null;
+        connectAlertStream();
+      }
+    } catch {
+      if (!state.alertActive.has(SERVER_KEY)) {
+        handleAlert({
+          level: "critical", kind: "server", problem: "server", title: "Lost the LocationSpoof app",
+          message: "This page can't reach the app anymore, so the iPhone has likely gone back to its real location. Check that LocationSpoof is still running.",
+          time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }),
+        });
+      }
+      // Watch closely until it's back, then announce it and resync the alert stream.
+      if (!serverDownPoll) {
+        serverDownPoll = setInterval(async () => {
+          try {
+            await api("/api/status");
+          } catch {
+            return;
+          }
+          clearInterval(serverDownPoll);
+          serverDownPoll = null;
+          serverBack();
+          connectAlertStream();
+        }, 2000);
+      }
+    } finally {
+      serverCheck = null;
+    }
+  })();
+}
+
+function serverBack() {
+  if (state.alertActive.has(SERVER_KEY)) {
+    handleAlert({
+      level: "recovered", kind: "server", resolves: "server", title: "Reconnected to the app",
+      message: "This page can reach LocationSpoof again.",
+      time: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }),
+    });
+  }
+}
+
+// Alerts arrive over Server-Sent Events: they keep coming in a background tab, unlike polling timers.
+// Browsers give up on an EventSource after some failures (e.g. the app restarting), so the page
+// reconnects by itself: when the stream closes, and when its 15 s heartbeat stops arriving.
+let alertSource = null;
+let alertStreamSeen = 0; // when the stream last delivered anything (hello, alert or heartbeat)
+let alertRetryMs = 1000;
+let alertRetryTimer = null;
+const ALERT_STREAM_STALE_MS = 40000;
+
+function scheduleAlertReconnect() {
+  if (alertRetryTimer) return;
+  alertRetryTimer = setTimeout(() => {
+    alertRetryTimer = null;
+    connectAlertStream();
+  }, alertRetryMs);
+  alertRetryMs = Math.min(alertRetryMs * 2, 15000);
+}
+
+function alertStreamHealthy() {
+  return !!alertSource && alertSource.readyState !== EventSource.CLOSED && Date.now() - alertStreamSeen < ALERT_STREAM_STALE_MS;
+}
+
+function connectAlertStream() {
+  if (!window.EventSource) return;
+  if (alertSource) alertSource.close();
+  const source = (alertSource = new EventSource("/api/alerts/stream"));
+  alertStreamSeen = Date.now();
+  source.addEventListener("hello", async (e) => {
+    const hello = JSON.parse(e.data);
+    alertStreamSeen = Date.now();
+    alertRetryMs = 1000;
+    serverBack();
+    if (lastAlertId && hello.last_id > lastAlertId) {
+      // Reconnected: show what happened while the stream was down, without replaying sounds.
+      try {
+        const missed = await api(`/api/alerts?after=${lastAlertId}`);
+        missed.alerts.forEach((a) => handleAlert(a, { replay: true }));
+      } catch { /* shown on the next one */ }
+    }
+    lastAlertId = hello.last_id; // also resets if the app restarted and its ids began again
+    const server = state.alertActive.get(SERVER_KEY);
+    state.alertActive = new Map(hello.active.map((a) => [alertKey(a), a]));
+    if (server) state.alertActive.set(SERVER_KEY, server);
+    syncActiveAlerts();
+  });
+  source.addEventListener("ping", () => (alertStreamSeen = Date.now()));
+  source.onmessage = (e) => {
+    alertStreamSeen = Date.now();
+    const alert = JSON.parse(e.data);
+    if (alert.id > lastAlertId) handleAlert(alert);
+  };
+  source.onerror = () => {
+    // Don't rely on the browser's own retry (it can stall or give up): close and reopen ourselves.
+    source.close();
+    if (alertSource === source) alertSource = null;
+    checkServerDown();
+    scheduleAlertReconnect();
+  };
+}
+
+// Watchdog: reconnect if the stream went quiet (closed for good, or heartbeats stopped).
+setInterval(() => {
+  if (window.EventSource && !alertStreamHealthy()) scheduleAlertReconnect();
+}, 5000);
+
+// ---------- alert controls ----------
+
+function renderAlertsControl() {
+  const s = state.alertSettings;
+  const on = alertsOn();
+  const btn = $("#alerts-toggle");
+  btn.textContent = `🔔 Alerts: ${on ? "On" : "Off"}`;
+  btn.classList.toggle("on", on);
+  $("#alerts-options").classList.toggle("hidden", !on);
+  $("#alert-opt-sound").checked = s.sound;
+  $("#alert-opt-flash").checked = s.flash;
+  $("#alert-opt-recovery").checked = s.recovery_chime;
+  $("#alert-opt-recovery").disabled = !s.sound;
+  $("#alert-opt-volume").value = s.volume;
+  $("#alert-opt-volume").disabled = !s.sound;
+  let text = "";
+  if (on && s.sound && audioCtx?.state !== "running") {
+    text = "Click anywhere on this page once to allow sound. Browsers block it until you do.";
+  } else if (on) {
+    text = "Alerts when the iPhone disconnects, the real location may be showing, or the computer slept while spoofing.";
+  }
+  $("#alerts-status").textContent = text;
+}
+
+async function loadAlertSettings() {
+  try {
+    state.alertSettings = await api("/api/alert-settings");
+  } catch { /* defaults */ }
+  renderAlertsControl();
+  syncActiveAlerts();
+}
+
+let alertSaveTimer = null;
+function saveAlertSettings(patch, { delay = 0 } = {}) {
+  state.alertSettings = { ...state.alertSettings, ...patch };
+  renderAlertsControl();
+  syncActiveAlerts();
+  clearTimeout(alertSaveTimer);
+  alertSaveTimer = setTimeout(async () => {
+    try {
+      await api("/api/alert-settings", { method: "POST", body: state.alertSettings });
+    } catch (e) {
+      toast(e.message, "error");
+    }
+  }, delay);
+}
+
+$("#alerts-toggle").addEventListener("click", () => {
+  if (alertsOn()) {
+    saveAlertSettings({ sound: false, flash: false });
+  } else {
+    audio(); // this click is the gesture that unlocks sound
+    saveAlertSettings({ sound: true, flash: true });
+    toast("Alerts on. Use 'Test alert' to hear and see one.", "ok");
+  }
+});
+$("#alert-opt-sound").addEventListener("change", (e) => {
+  if (e.target.checked) audio();
+  saveAlertSettings({ sound: e.target.checked });
+});
+$("#alert-opt-flash").addEventListener("change", (e) => saveAlertSettings({ flash: e.target.checked }));
+$("#alert-opt-recovery").addEventListener("change", (e) => saveAlertSettings({ recovery_chime: e.target.checked }));
+$("#alert-opt-volume").addEventListener("input", (e) => saveAlertSettings({ volume: Number(e.target.value) }, { delay: 400 }));
+$("#alert-opt-volume").addEventListener("change", () => playChime()); // preview the new volume
+
+$("#alert-test").addEventListener("click", async () => {
+  audio();
+  try {
+    const alert = await api("/api/alerts/test", { method: "POST" });
+    // Normally it arrives over the stream; play it here if the stream hasn't delivered it yet.
+    setTimeout(() => { if (alert.id > lastAlertId) handleAlert(alert); }, 700);
+  } catch (e) {
+    toast(e.message, "error");
+  }
+});
+
 // ---------- units ----------
 
 function applyUnits() {
@@ -1402,6 +1744,8 @@ refreshDriveLog();
 setInterval(refreshDriveLog, 5000);
 refreshKeepAwake();
 setInterval(refreshKeepAwake, 5000);
+loadAlertSettings();
+connectAlertStream();
 
 // Start the map where it matters: the phone's spoofed spot, otherwise where you are.
 let userMovedMap = false;

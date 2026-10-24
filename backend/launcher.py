@@ -87,8 +87,12 @@ class Server:
     """uvicorn in a background thread (uvicorn skips signal handlers off the main thread)."""
 
     def __init__(self, port: int) -> None:
-        config = uvicorn.Config(server_main.app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio")
+        config = uvicorn.Config(
+            server_main.app, host="127.0.0.1", port=port, log_level="warning", loop="asyncio",
+            timeout_graceful_shutdown=server_main.GRACEFUL_SHUTDOWN_S,
+        )
         self.server = uvicorn.Server(config)
+        server_main.app.state.uvicorn_server = self.server  # lets alert streams end promptly on quit
         self.thread = threading.Thread(target=self.server.run, name="locationspoof-server", daemon=True)
 
     def start(self) -> bool:
