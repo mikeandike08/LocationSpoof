@@ -18,7 +18,7 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from packaging.version import Version
 from pymobiledevice3 import usbmux
@@ -51,8 +51,9 @@ def _version(text: Optional[str]) -> Version:
         return Version("0")
 
 
-def _clock() -> str:
-    return time.strftime("%-I:%M:%S %p")
+def _clock(t: Optional[float] = None, fmt: str = "%I:%M:%S %p") -> str:
+    # "%-I" (no leading zero) isn't supported on Windows, so strip the zero by hand.
+    return time.strftime(fmt, time.localtime(t)).lstrip("0")
 
 
 @dataclass
@@ -108,6 +109,8 @@ class DeviceManager:
         self._jobs: dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
         self.usbmux_error: Optional[str] = None
+        # Called as listener(kind, udid, data) for connection events (see emit()).
+        self.listeners: list[Callable[[str, str, dict], None]] = []
 
     # ---------- lifecycle ----------
 
@@ -121,6 +124,14 @@ class DeviceManager:
             job.cancel()
         async with self._tunnel_lock:
             await self._close_tunnel()
+
+    def emit(self, kind: str, udid: str, **data) -> None:
+        """Tell listeners about a connection event: disconnected, reconnected, spoof_lost, spoof_restored."""
+        for listener in self.listeners:
+            try:
+                listener(kind, udid, data)
+            except Exception:
+                logger.exception(f"listener failed for {kind}")
 
     # ---------- watchdog ----------
 
@@ -158,8 +169,9 @@ class DeviceManager:
                 record = self.devices[udid] = DeviceRecord(udid=udid)
                 record.log(f"Found iPhone via {' + '.join(sorted(conns))}")
             elif not record.connected:
-                away = int(now - (record.disconnected_at or now))
-                record.log(f"Reconnected via {' + '.join(sorted(conns))} after {away}s", "ok")
+                away = now - (record.disconnected_at or now)
+                record.log(f"Reconnected via {' + '.join(sorted(conns))} after {int(away)}s", "ok")
+                self.emit("reconnected", udid, away_s=away, via=" + ".join(sorted(conns)))
                 record.next_tunnel_try = 0
                 record.tunnel_attempts = 0
             elif conns != record.connections:
@@ -177,6 +189,7 @@ class DeviceManager:
                 record.disconnected_at = now
                 record.tunnel_state = "none"
                 record.log(f"iPhone disconnected. {CABLE_HINT}", "error")
+                self.emit("disconnected", udid)
                 if self.tunnel_udid == udid:
                     async with self._tunnel_lock:
                         await self._close_tunnel()
@@ -329,7 +342,7 @@ class DeviceManager:
         if r.busy:
             return {"level": "busy", "message": r.busy}
         if not r.connected:
-            since = time.strftime("%-I:%M %p", time.localtime(r.disconnected_at or time.time()))
+            since = _clock(r.disconnected_at, "%I:%M %p")
             return {
                 "level": "error",
                 "message": f"Disconnected at {since}. {CABLE_HINT} Your spoofed location is re-applied automatically when it reconnects.",

@@ -38,6 +38,8 @@ class LocationSession:
         self.error: Optional[str] = None
         self.watchdog: Optional[asyncio.Task] = None
         self._was_broken = False
+        self._live = False  # a spoof has been delivered and not cleared
+        self._lost_at: Optional[float] = None  # when the phone stopped getting the spoof
 
     @property
     def connected(self) -> bool:
@@ -95,24 +97,42 @@ class LocationSession:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(stack.aclose(), timeout=5)
 
-    def _stale(self) -> bool:
+    def _stale_reason(self) -> Optional[str]:
         if self.sim is None:
-            return True
+            return "location channel closed"
         record = self._record()
         if record is None or not record.connected:
-            return True
+            return "iPhone disconnected"
         # Tunnel moved (e.g. cable unplugged, now on Wi-Fi): the old channel is dead.
-        return record.uses_tunnel and self._current_tunnel_key() != self.tunnel_key
+        if record.uses_tunnel and self._current_tunnel_key() != self.tunnel_key:
+            return "developer tunnel was replaced"
+        return None
+
+    def _stale(self) -> bool:
+        return self._stale_reason() is not None
+
+    def _spoof_lost(self, reason: str) -> None:
+        """The phone stopped getting the spoof; on iOS 17+ it falls back to its real location."""
+        if self._live and self._lost_at is None:
+            self._lost_at = time.monotonic()
+            self.devices.emit("spoof_lost", self.udid, reason=reason)
 
     async def _send(self, lat: float, lng: float) -> None:
         last_error: Optional[BaseException] = None
         for attempt in range(2):
             try:
-                if self._stale():
+                reason = self._stale_reason()
+                if reason:
+                    self._spoof_lost(reason)
                     await self._open()
                 await asyncio.wait_for(self.sim.set(lat, lng), timeout=SEND_TIMEOUT_S)
                 self.error = None
                 self.last_sent_at = time.monotonic()
+                if self._lost_at is not None:
+                    down_s = self.last_sent_at - self._lost_at
+                    self._lost_at = None
+                    self.devices.emit("spoof_restored", self.udid, down_s=down_s, position=(lat, lng))
+                self._live = True
                 if self._was_broken:
                     self._was_broken = False
                     self._log("Spoofed location re-applied", "ok")
@@ -120,6 +140,7 @@ class LocationSession:
             except Exception as e:
                 last_error = e
                 logger.warning(f"[{self.udid}] set failed (attempt {attempt + 1}): {e!r}")
+                self._spoof_lost(explain(e))
                 await self._close()
                 if isinstance(e, DeviceError):
                     break  # disconnected / no tunnel: retrying immediately won't help
@@ -143,6 +164,7 @@ class LocationSession:
     async def clear(self) -> None:
         async with self.lock:
             self.last = None
+            self._live, self._lost_at = False, None
             try:
                 if self._stale():
                     await self._open()
@@ -167,6 +189,7 @@ class LocationSession:
                 continue
             record = self._record()
             if record is None or not record.connected:
+                self._spoof_lost("iPhone disconnected")
                 continue  # wait for it to come back; the scan logs the disconnect
             due = time.monotonic() - self.last_sent_at > KEEPALIVE_S
             if self._stale() or due:

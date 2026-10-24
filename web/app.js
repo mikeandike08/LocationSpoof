@@ -1214,7 +1214,9 @@ function renderPlayback() {
     }
   } else if (p.state === "finished") {
     $("#live-speed").textContent = tag + "Arrived";
-    $("#live-remaining").textContent = p.preview ? "The phone wasn't moved." : "";
+    $("#live-remaining").textContent = p.preview
+      ? "The phone wasn't moved."
+      : p.holding ? "Holding here: the destination is re-applied every minute until you stop." : "";
     if (p.preview && p.position) setPreviewMarker(p.position);
   } else {
     $("#live-speed").textContent = "-";
@@ -1273,6 +1275,63 @@ $("#speed-scale").addEventListener("input", (e) => {
   }
 });
 
+// ---------- drive log ----------
+
+state.driveLog = { enabled: false };
+
+async function refreshDriveLog() {
+  try {
+    state.driveLog = await api("/api/drive-log");
+  } catch {
+    return;
+  }
+  renderDriveLog();
+}
+
+function renderDriveLog() {
+  const d = state.driveLog;
+  const btn = $("#drive-log-toggle");
+  btn.textContent = d.enabled ? "■ Stop disconnect log" : "● Start disconnect log";
+  btn.classList.toggle("danger-ghost", d.enabled);
+
+  const status = $("#drive-log-status");
+  if (d.enabled) {
+    const issues = `${d.incidents} incident${d.incidents === 1 ? "" : "s"}`;
+    const watching = d.monitoring ? "Watching the current route" : "Waiting for a route on the iPhone (previews aren't logged)";
+    const real = d.real_location ? ` · real location ${fmtCoord(d.real_location.lat, d.real_location.lng)}` : "";
+    status.textContent = `Logging since ${d.since}. ${watching} · ${issues}${real}.`;
+    status.classList.toggle("error-text", !!d.problem_now);
+  } else {
+    status.textContent = "Records only when the iPhone disconnects or drops back to its real location during a route. Saved to data/drive-log.txt.";
+    status.classList.remove("error-text");
+  }
+
+  const entries = d.entries || [];
+  $("#drive-log-entries").classList.toggle("hidden", entries.length === 0);
+  $("#drive-log-summary").textContent = `Recent entries (${entries.length})`;
+  const list = $("#drive-log-list");
+  list.innerHTML = "";
+  for (const ev of entries) {
+    list.append(el("li", { class: ev.level }, el("span", { class: "log-time" }, ev.time), el("span", {}, ev.msg)));
+  }
+}
+
+$("#drive-log-toggle").addEventListener("click", async () => {
+  try {
+    let body = { enabled: !state.driveLog.enabled };
+    if (body.enabled) {
+      // The phone's real location: where this computer is (the phone is plugged into it / next to it).
+      const me = state.me || (await locateMe());
+      if (me) body = { ...body, lat: me.lat, lng: me.lng, label: me.precise ? "this computer (browser location)" : me.label };
+    }
+    state.driveLog = await api("/api/drive-log", { method: "POST", body });
+    renderDriveLog();
+    toast(body.enabled ? "Disconnect log on. Entries go to data/drive-log.txt." : "Disconnect log off.");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+});
+
 // ---------- units ----------
 
 function applyUnits() {
@@ -1302,6 +1361,8 @@ loadSavedRoutes();
 refreshPlayback();
 setInterval(refreshDevices, 3000);
 setInterval(refreshStatus, 10000);
+refreshDriveLog();
+setInterval(refreshDriveLog, 5000);
 
 // Start the map where it matters: the phone's spoofed spot, otherwise where you are.
 let userMovedMap = false;

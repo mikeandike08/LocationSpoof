@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from backend import geocode, tiles
 from backend.errors import DeviceError, explain
 from backend.devices import DeviceManager, is_root
+from backend.drivelog import LOG_PATH, DriveLog
 from backend.geo import offset_m
 from backend.location import LocationService, PreviewSession
 from backend.places import PlacesStore, RoutesStore
@@ -79,6 +80,8 @@ devices = DeviceManager()
 locations = LocationService(devices)
 places = PlacesStore()
 player = RoutePlayer()
+drive_log = DriveLog(player)
+devices.listeners.append(drive_log.on_event)
 saved_routes = RoutesStore()
 routes: dict[str, Route] = {}  # recently built/loaded routes, by id
 MAX_ROUTES_IN_MEMORY = 10
@@ -187,6 +190,8 @@ async def nudge_location(body: Nudge):
         raise HTTPException(400, "Set a location first")
     if player.status.state == "playing":
         raise HTTPException(409, "Stop the route before moving manually")
+    if player.status.holding:
+        player.stop()  # otherwise the next re-apply would snap back to the destination
     lat, lng = offset_m(session.last, body.north_m, body.east_m)
     try:
         await session.set(lat, lng)
@@ -363,6 +368,47 @@ async def playback_control(action: Literal["pause", "resume", "stop"]):
 @app.get("/api/playback")
 async def playback_status():
     return player.status.to_json()
+
+
+# ---------- drive log (disconnects / lost spoof during a route) ----------
+
+
+class DriveLogToggle(BaseModel):
+    enabled: bool
+    lat: Optional[float] = Field(None, ge=-90, le=90)
+    lng: Optional[float] = Field(None, ge=-180, le=180)
+    label: Optional[str] = Field(None, max_length=200)
+
+
+@app.get("/api/drive-log")
+async def drive_log_status():
+    return drive_log.describe()
+
+
+@app.post("/api/drive-log")
+async def drive_log_toggle(body: DriveLogToggle):
+    if not body.enabled:
+        drive_log.disable()
+        return drive_log.describe()
+    # The iPhone's real location can't be read from here; the computer it's plugged into is next to it.
+    real = None
+    if body.lat is not None and body.lng is not None:
+        real = {"lat": body.lat, "lng": body.lng, "label": body.label or "this computer"}
+    else:
+        try:
+            approx = await geocode.approximate_location()
+        except Exception:
+            approx = None  # offline: log without it
+        if approx:
+            real = {"lat": approx["lat"], "lng": approx["lng"], "label": f"approximate, near {approx.get('label')}"}
+    drive_log.enable(real)
+    return drive_log.describe()
+
+
+@app.get("/drive-log.txt")
+async def drive_log_file():
+    text = LOG_PATH.read_text(encoding="utf-8") if LOG_PATH.exists() else "No incidents logged yet.\n"
+    return Response(content=text, media_type="text/plain; charset=utf-8")
 
 
 # ---------- saved routes (stored with full geometry: replay works offline) ----------

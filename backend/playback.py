@@ -10,7 +10,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from backend.geo import LatLng, Segment, bearing_deg, build_segments, lerp
 from backend.location import LocationSession, PreviewSession
@@ -21,6 +21,7 @@ TICK_S = 1.0  # iOS location updates are ~1 Hz; faster ticks just add load
 PREVIEW_TICK_S = 0.25  # map-only preview: smoother animation, no phone to load
 ACCEL_MPS2 = 2.0
 DECEL_MPS2 = 2.5
+HOLD_REAPPLY_S = 60  # after arriving, re-send the destination this often
 
 
 @dataclass
@@ -38,6 +39,7 @@ class PlaybackStatus:
     error: Optional[str] = None
     preview: bool = False  # playing on the map only; no phone is being updated
     waiting: bool = False  # device not accepting updates; the route is holding position
+    holding: bool = False  # arrived; still re-applying the destination every minute
 
     def to_json(self) -> dict:
         return {
@@ -55,6 +57,7 @@ class PlaybackStatus:
             "error": self.error,
             "waiting": self.waiting,
             "preview": self.preview,
+            "holding": self.holding,
         }
 
 
@@ -68,6 +71,20 @@ class RoutePlayer:
         self.jitter = 0.0
         self._paused = asyncio.Event()
         self._paused.set()  # set == running
+        self.started_at = 0.0  # wall-clock time the current route started
+        self.on_stop: Optional[Callable[[], None]] = None  # called when a running route is stopped
+
+    @property
+    def running(self) -> bool:
+        """Playing, paused, waiting for the phone, or holding at the destination."""
+        return self.task is not None and not self.task.done()
+
+    @property
+    def device_udid(self) -> Optional[str]:
+        """The iPhone this route is driving right now (None for a preview or when stopped)."""
+        if self.running and isinstance(self.session, LocationSession):
+            return self.session.udid
+        return None
 
     def start(
         self,
@@ -94,6 +111,7 @@ class RoutePlayer:
             preview=isinstance(session, PreviewSession),
         )
         self._paused.set()
+        self.started_at = time.time()
         self.task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
@@ -108,9 +126,12 @@ class RoutePlayer:
             self.status.state = "playing"
 
     def stop(self) -> None:
-        if self.task and not self.task.done():
+        if self.running:
+            if self.on_stop:
+                self.on_stop()
             self.task.cancel()
         self.task = None
+        self.status.holding = False
         if self.status.state in ("playing", "paused"):
             self.status.state = "idle"
             self.status.speed_kmh = 0
@@ -155,7 +176,10 @@ class RoutePlayer:
             self.status.waiting = False
             return True
         except Exception as e:
-            self.status.error = f"Paused until the iPhone reconnects. {e}"
+            if self.status.holding:
+                self.status.error = f"Can't reach the iPhone; the destination is re-applied when it's back. {e}"
+            else:
+                self.status.error = f"Paused until the iPhone reconnects. {e}"
             self.status.waiting = True
             return False
 
@@ -212,7 +236,13 @@ class RoutePlayer:
                     await self._send(end)
                     st.position, st.state, st.speed_kmh, st.remaining_s = end, "finished", 0, 0
                     st.traveled_m = st.total_m
-                    return
+                    if st.preview:
+                        return
+                    # Stay parked: keep re-sending the destination so the phone never drifts off it.
+                    st.holding = True
+                    while True:
+                        await asyncio.sleep(HOLD_REAPPLY_S)
+                        await self._send(end)
 
                 seg = self.segments[index]
                 pos = lerp(seg.start, seg.end, offset / seg.length_m)
