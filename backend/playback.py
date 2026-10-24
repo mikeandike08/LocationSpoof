@@ -73,6 +73,7 @@ class RoutePlayer:
         self._paused.set()  # set == running
         self.started_at = 0.0  # wall-clock time the current route started
         self.on_stop: Optional[Callable[[], None]] = None  # called when a running route is stopped
+        self.on_finish: Optional[Callable[[], None]] = None  # called when a route reaches its destination
 
     @property
     def running(self) -> bool:
@@ -238,6 +239,8 @@ class RoutePlayer:
                     st.traveled_m = st.total_m
                     if st.preview:
                         return
+                    if self.on_finish:
+                        self.on_finish()
                     # Stay parked: keep re-sending the destination so the phone never drifts off it.
                     st.holding = True
                     while True:

@@ -1,0 +1,72 @@
+# Builds the Windows installer (.exe) and the macOS disk image (.dmg).
+#   - Run it by hand from the Actions tab: installers are attached to the run as artifacts.
+#   - Push a version tag (git tag v0.3.0 && git push origin v0.3.0): they're also attached to a
+#     draft GitHub Release, which you review and publish yourself.
+name: Installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest  # Apple Silicon
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.13: on 3.12 and older the iOS 17.4+ tunnel needs sslpsk_pmd3 (its Windows build is broken);
+      # 3.14 has no pylzss wheel yet. 3.13 uses Python's own ssl for the tunnel.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      # Inno Setup ships on the Windows runner image; install it only if it's missing.
+      - name: Ensure Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build installer
+        run: python packaging/build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocationSpoof-${{ matrix.name }}
+          path: dist/installer/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: installers/*
+          body: |
+            **Windows:** run `LocationSpoof-Setup-*.exe`. Windows SmartScreen may say "Windows protected your PC" because the installer isn't code-signed: click **More info → Run anyway**. You also need Apple's iPhone driver (the free **Apple Devices** app from the Microsoft Store, or iTunes); the installer offers a link if it's missing.
+
+            **macOS (Apple Silicon):** open the `.dmg` and drag LocationSpoof to Applications. The app isn't notarized, so the first time, right-click it and choose **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.

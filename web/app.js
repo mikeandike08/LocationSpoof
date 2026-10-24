@@ -1302,7 +1302,7 @@ function renderDriveLog() {
     status.textContent = `Logging since ${d.since}. ${watching} · ${issues}${real}.`;
     status.classList.toggle("error-text", !!d.problem_now);
   } else {
-    status.textContent = "Records only when the iPhone disconnects or drops back to its real location during a route. Saved to data/drive-log.txt.";
+    status.textContent = "Records when the iPhone disconnects or drops back to its real location during a route, and when a route arrives. Saved to drive-log.txt in the data folder.";
     status.classList.remove("error-text");
   }
 
@@ -1326,7 +1326,7 @@ $("#drive-log-toggle").addEventListener("click", async () => {
     }
     state.driveLog = await api("/api/drive-log", { method: "POST", body });
     renderDriveLog();
-    toast(body.enabled ? "Disconnect log on. Entries go to data/drive-log.txt." : "Disconnect log off.");
+    toast(body.enabled ? "Disconnect log on. Open it any time with the Open log file link." : "Disconnect log off.");
   } catch (e) {
     toast(e.message, "error");
   }
