@@ -15,7 +15,7 @@ from collections import deque
 from datetime import datetime
 from typing import Optional
 
-from backend.places import DATA_DIR
+from backend.paths import DATA_DIR
 from backend.playback import RoutePlayer
 
 LOG_PATH = DATA_DIR / "drive-log.txt"

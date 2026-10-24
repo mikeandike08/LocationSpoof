@@ -1,6 +1,6 @@
 # LocationSpoof
 
-Spoof your iPhone's GPS location from your Mac using a local web page. It works over USB or Wi-Fi and needs no jailbreak and no app on the phone.
+Spoof your iPhone's GPS location from your Mac or Windows PC using a local web page. It works over USB or Wi-Fi and needs no jailbreak and no app on the phone.
 
 - **Teleport**: search any address or click the map.
 - **Saved places**: save addresses and jump back to them. Search results are ranked by distance from you.
@@ -13,13 +13,23 @@ It uses Apple's developer location simulation, the same mechanism Xcode uses, th
 
 ## Quick start
 
+**macOS**
 ```bash
 ./run.sh
 ```
+Press **Ctrl+C** to quit.
 
-The first run creates `.venv` and installs dependencies, then opens http://127.0.0.1:8765. No administrator password is needed: the iOS 17+ developer tunnel runs inside the app (pymobiledevice3's userspace tunnel). Logs go to `data/server.log`.
+**Windows**
 
-Press **Ctrl+C** to quit. Quitting restores the phone's real location.
+1. Install [Python](https://www.python.org/downloads/) **3.12** (3.10 to 3.13 work; 3.14 doesn't yet, because one of pymobiledevice3's packages has no Windows build for it). Multiple versions can be installed side by side; setup picks a compatible one.
+2. Install Apple's iPhone driver: the **Apple Devices** app from the Microsoft Store (or iTunes). Open it once with the iPhone plugged in so the phone gets recognized.
+3. Double-click **`run.bat`**.
+
+LocationSpoof runs in the background with an icon in the system tray. Click the icon to open the app; use **Quit** in its menu to stop. For a console with live logs, run `run.bat --console`.
+
+Either way, the first run creates `.venv` and installs dependencies, then opens http://127.0.0.1:8765. No administrator password is needed: the iOS 17+ developer tunnel runs inside the app (pymobiledevice3's userspace tunnel). Logs go to `data/server.log`. Quitting restores the phone's real location.
+
+The tray launcher also works on macOS (menu-bar icon): `.venv/bin/python -m backend.launcher`.
 
 ## First-time phone setup
 
@@ -48,7 +58,7 @@ The route summary shows what fraction of the route had a real posted limit. Play
 - iOS 16 and older work over USB without the tunnel.
 - Free public services: OpenStreetMap tiles, Photon (suggestions as you type), Nominatim (Enter-key search and reverse lookup), Valhalla (routing), with OSRM as a fallback. Please keep usage personal and light. You can point the app at other servers with the `LOCSPOOF_VALHALLA_URL`, `LOCSPOOF_PHOTON_URL`, `LOCSPOOF_NOMINATIM_URL` and `LOCSPOOF_OSRM_URL` environment variables.
 - The server only listens on `127.0.0.1`.
-- Saved places live in `data/places.json`, saved routes in `data/routes.json`.
+- Saved places live in `data/places.json`, saved routes in `data/routes.json`. Set `LOCSPOOF_DATA_DIR` to keep them somewhere else. A packaged build stores them in `~/Library/Application Support/LocationSpoof` (macOS) or `%APPDATA%\\LocationSpoof` (Windows).
 - Your location (for "Your location" and nearby search) comes from the browser if you allow it, otherwise from your network (approximate, via ipinfo.io).
 
 ## Connection problems
@@ -61,18 +71,22 @@ The app recovers on its own from:
 - a phone restart (the developer disk image is re-mounted automatically).
 
 ## Offline use
-Searching and building **new** routes need internet. Saved routes and saved places don't. The map background works offline for areas you've already viewed (tiles are cached in `data/tiles/`). The iPhone must stay connected to the Mac (USB needs no Wi-Fi at all).
+Searching and building **new** routes need internet. Saved routes and saved places don't. The map background works offline for areas you've already viewed (tiles are cached in `data/tiles/`). The iPhone must stay connected to the computer (USB needs no Wi-Fi at all).
 
 ## Troubleshooting
 - **Install fails with `tapi error: unknown architecture`**: your Command Line Tools linker is older than the newest SDK. `setup.sh` retries the build against an older SDK automatically. Updating the Command Line Tools also fixes it.
 - **Device not listed**: unlock the phone, check that the cable carries data, and tap Trust.
+- **Windows: "Apple's device service isn't running"**: install the Apple Devices app (Microsoft Store) or iTunes, open it once with the iPhone plugged in, and try again.
 - **"The developer tunnel isn't up yet"**: keep the phone unlocked and check that Developer Mode is on; the app retries automatically.
-- **Page says it can't reach the server**: check that only one copy of LocationSpoof is running (an old `sudo` copy from an earlier version will fight over the phone). Quit all copies and start again with `./run.sh`. Details are in `data/server.log`.
+- **Page says it can't reach the server**: check that only one copy of LocationSpoof is running (an old `sudo` copy from an earlier version will fight over the phone). Quit all copies and start again with `./run.sh` (or `run.bat`). Details are in `data/server.log`.
 
 ## Project layout
 ```
 backend/
   main.py       FastAPI app + API routes
+  launcher.py   tray / menu-bar launcher (runs the server in the background)
+  paths.py      where web files and user data live (source checkout vs packaged app)
+  drivelog.py   disconnect / lost-spoof log written during routes
   devices.py    discovery, pairing, Developer Mode, disk image, userspace developer tunnel
   location.py   holds the location channel open, auto-reconnects, re-applies the last fix
   playback.py   moves along a route with per-segment speeds

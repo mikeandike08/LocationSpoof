@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 
-from backend.places import DATA_DIR, _chown_to_invoking_user
+from backend.paths import DATA_DIR
 
 TILE_URL = os.environ.get("LOCSPOOF_TILE_URL", "https://tile.openstreetmap.org/{z}/{x}/{y}.png")
 USER_AGENT = "LocationSpoof/0.1 (personal, local use; caches viewed tiles)"
@@ -34,12 +34,9 @@ def _path(z: int, x: int, y: int) -> Path:
 
 def _save(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    for parent in (CACHE_DIR, path.parent.parent, path.parent):
-        _chown_to_invoking_user(parent)
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
-    _chown_to_invoking_user(path)
 
 
 async def get_tile(z: int, x: int, y: int) -> Optional[bytes]:

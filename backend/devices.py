@@ -14,7 +14,6 @@ and records what happened so the UI can explain it.
 import asyncio
 import contextlib
 import logging
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -38,10 +37,6 @@ INFO_TTL_S = 30
 SCAN_INTERVAL_S = 2.5
 FORGET_DISCONNECTED_S = 15 * 60
 TUNNEL_OPEN_TIMEOUT_S = 30
-
-
-def is_root() -> bool:
-    return os.geteuid() == 0
 
 
 def _version(text: Optional[str]) -> Version:
@@ -435,7 +430,7 @@ class DeviceManager:
         record.busy = "Pairing: tap 'Trust' on the iPhone and enter your passcode"
         async with await self._lockdown(udid, autopair=True, pair_timeout=120) as lockdown:
             if not record.paired:
-                record.log("Paired with this Mac", "ok")
+                record.log("Paired with this computer", "ok")
             record.paired = True
             record.ios_version = lockdown.product_version
             if _version(record.ios_version) >= Version("16.0"):
