@@ -209,6 +209,17 @@
             <span id="live-remaining" class="muted small"></span>
           </div>
           <div id="playback-error" class="status-line error hidden"></div>
+          <div class="drive-log">
+            <div class="btn-row">
+              <button id="drive-log-toggle" class="btn small">● Start disconnect log</button>
+              <a id="drive-log-open" class="small" href="/drive-log.txt" target="_blank" rel="noopener">Open log file</a>
+            </div>
+            <div id="drive-log-status" class="muted small">Records only when the iPhone disconnects or drops back to its real location during a route. Saved to data/drive-log.txt.</div>
+            <details id="drive-log-entries" class="device-log hidden">
+              <summary id="drive-log-summary">Recent entries</summary>
+              <ul id="drive-log-list"></ul>
+            </details>
+          </div>
         </div>
       </div>
     </section>
