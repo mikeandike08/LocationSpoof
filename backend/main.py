@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from backend import geocode, tiles
 from backend.errors import DeviceError, explain
 from backend.devices import DeviceManager
-from backend.drivelog import LOG_PATH, DriveLog
+from backend.drivelog import LOG_PATH, DriveLog, parse_log
 from backend.geo import offset_m
 from backend.keepawake import SUPPORTED as KEEP_AWAKE_SUPPORTED
 from backend.keepawake import KeepAwake
@@ -472,6 +472,22 @@ async def drive_log_toggle(body: DriveLogToggle):
             real = {"lat": approx["lat"], "lng": approx["lng"], "label": f"approximate, near {approx.get('label')}"}
     drive_log.enable(real)
     return drive_log.describe()
+
+
+@app.get("/api/drive-log/history")
+async def drive_log_history():
+    """The whole drive log, parsed into routes and entries for the viewer page."""
+    if LOG_PATH.exists():
+        parsed = parse_log(LOG_PATH.read_text(encoding="utf-8"))
+        updated = LOG_PATH.stat().st_mtime
+    else:
+        parsed, updated = parse_log(""), None
+    return {**parsed, "updated": updated, "path": str(LOG_PATH), "logging": drive_log.describe()}
+
+
+@app.get("/drive-log")
+async def drive_log_page():
+    return FileResponse(WEB_DIR / "drive-log.html")
 
 
 @app.get("/drive-log.txt")

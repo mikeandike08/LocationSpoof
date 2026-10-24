@@ -115,7 +115,7 @@ def _run_tray(url: str, server: Server) -> None:
         webbrowser.open(url)
 
     def open_log(*_):
-        webbrowser.open(f"{url}/drive-log.txt")
+        webbrowser.open(f"{url}/drive-log")
 
     def open_data(*_):
         DATA_DIR.mkdir(parents=True, exist_ok=True)

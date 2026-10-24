@@ -65,7 +65,7 @@ On the Route card, click **● Start disconnect log** before pressing Play. The 
 | `ARRIVED` | The route reached its destination: distance, time taken, and how many incidents it had. |
 | `UNRESOLVED` | A problem was still open when the route was stopped or logging was turned off. |
 
-Each route's header also notes whether **Keep computer awake** was on. Open the log with **Open log file** on the Route card or **Open drive log** in the tray menu. It's saved as `drive-log.txt` in the data folder.
+Each route's header also notes whether **Keep computer awake** was on. Open it with **Open drive log** on the Route card or in the tray menu. It opens a readable viewer: each route is a card with its distance, trip time, an arrived/incidents badge and your real location, followed by a color-coded timeline of what happened (with how long each outage lasted and map links for positions). There are summary totals, a **Problems only** filter, search, and live refresh while logging is on. **Download .txt** saves the raw `drive-log.txt` from the data folder.
 
 The computer can't read the iPhone's actual GPS position, so a "real location" entry is detected from its cause: on iOS 17+ the phone falls back to its real location whenever the location-simulation link breaks, and every such break is logged.
 

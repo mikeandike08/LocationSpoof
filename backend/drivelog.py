@@ -11,6 +11,7 @@ its cause: on iOS 17+ the phone falls back to its real location whenever the loc
 channel breaks (a failed send, a replaced developer tunnel, a lost cable or Wi-Fi link).
 """
 
+import re
 import threading
 import time
 from collections import deque
@@ -235,3 +236,140 @@ class DriveLog:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             with LOG_PATH.open("a", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
+
+
+# ---------- reading the log back (for the viewer page) ----------
+
+_HEADER_RE = re.compile(
+    r"^=== Route started (?P<started>.+?) \| (?P<mi>[\d.]+) mi \| logging since (?P<since>.+?) ===$"
+)
+_ENTRY_RE = re.compile(r"^(?P<stamp>\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2} [AP]M)  (?P<tag>.{15}) (?P<msg>.*)$")
+_DURATION_RE = re.compile(r"(?:(\d+)h )?(?:(\d+)m )?(\d+)s")
+_COORD_RE = re.compile(r"(-?\d{1,2}\.\d{3,}), (-?\d{1,3}\.\d{3,})")
+_STAMP_FMT = "%Y-%m-%d %I:%M:%S %p"
+
+# tag -> (kind, level, label) for the viewer. Levels: error (spoof down), ok (recovered/arrived), warn.
+TAGS = {
+    "DISCONNECTED": ("disconnected", "error", "iPhone disconnected"),
+    "RECONNECTED": ("reconnected", "ok", "iPhone reconnected"),
+    "REAL LOCATION": ("real_location", "error", "Real location showing"),
+    "SPOOF RESTORED": ("spoof_restored", "ok", "Spoof restored"),
+    "COMPUTER SLEPT": ("computer_slept", "error", "Computer slept"),
+    "TUNNEL REBUILT": ("tunnel_rebuilt", "warn", "Tunnel rebuilt"),
+    "DEVICE CHECK": ("device_check", "warn", "Device check"),
+    "ARRIVED": ("arrived", "ok", "Arrived"),
+    "UNRESOLVED": ("unresolved", "warn", "Unresolved"),
+}
+
+
+def _seconds(text: str) -> Optional[int]:
+    """First '1h 2m 3s' / '2m 3s' / '3s' duration in the text, in seconds."""
+    m = _DURATION_RE.search(text)
+    if not m:
+        return None
+    h, mins, s = (int(x) if x else 0 for x in m.groups())
+    return h * 3600 + mins * 60 + s
+
+
+def _iso(stamp: str) -> Optional[str]:
+    try:
+        return datetime.strptime(stamp.strip(), _STAMP_FMT).isoformat()
+    except ValueError:
+        return None
+
+
+def _interrupted_seconds(entries: list[dict]) -> int:
+    """Roughly how long the spoof was down during a route.
+
+    A SPOOF RESTORED entry carries the whole outage (including any sleep before it). A sleep or an
+    unresolved outage with no restore after it is counted on its own.
+    """
+    total = 0
+    pending = 0  # outage time from sleep / unresolved entries not yet covered by a restore
+    for e in entries:
+        if e["kind"] == "spoof_restored":
+            total += e["duration_s"] or 0
+            pending = 0
+        elif e["kind"] == "computer_slept" or (e["kind"] == "unresolved" and "Spoof" in e["message"]):
+            pending = max(pending, e["duration_s"] or 0)
+    return total + pending
+
+
+def parse_log(text: str) -> dict:
+    """Turn drive-log.txt back into routes and entries, newest route first."""
+    routes: list[dict] = []
+    current: Optional[dict] = None
+
+    def new_route(header: Optional[re.Match]) -> dict:
+        route = {
+            "started": header["started"] if header else None,
+            "started_iso": _iso(header["started"]) if header else None,
+            "distance_mi": float(header["mi"]) if header else None,
+            "logging_since": header["since"] if header else None,
+            "real_location": None,
+            "details": [],
+            "entries": [],
+        }
+        routes.append(route)
+        return route
+
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        if header := _HEADER_RE.match(line):
+            current = new_route(header)
+            continue
+        if line.startswith("    ") and current is not None and not current["entries"]:
+            detail = line.strip()
+            if detail.startswith("Real location (before spoofing):"):
+                current["real_location"] = detail.split(":", 1)[1].strip()
+            else:
+                current["details"].append(detail)
+            continue
+        entry = _ENTRY_RE.match(line)
+        if not entry:
+            continue  # unknown line (older format); skip rather than fail
+        if current is None:
+            current = new_route(None)  # entries written before route headers existed
+        tag = entry["tag"].strip()
+        kind, level, label = TAGS.get(tag, (tag.lower().replace(" ", "_"), "warn", tag.title()))
+        message = entry["msg"]
+        if tag == "DEVICE CHECK" and "answering again" in message:
+            level = "ok"
+        if tag == "ARRIVED" and "no incidents" not in message:
+            level = "warn"
+        current["entries"].append({
+            "time": entry["stamp"],
+            "time_iso": _iso(entry["stamp"]),
+            "tag": tag,
+            "kind": kind,
+            "level": level,
+            "label": label,
+            "message": message,
+            "duration_s": _seconds(message),
+            "coords": [[float(a), float(b)] for a, b in _COORD_RE.findall(message)],
+        })
+
+    for route in routes:
+        entries = route["entries"]
+        arrived = next((e for e in entries if e["kind"] == "arrived"), None)
+        blamed_on_sleep = lambda e: e["kind"] == "real_location" and "computer was asleep" in e["message"]
+        route["incidents"] = sum(
+            1 for e in entries if e["kind"] in ("disconnected", "real_location", "computer_slept") and not blamed_on_sleep(e)
+        )
+        route["arrived"] = arrived is not None
+        route["trip_s"] = arrived["duration_s"] if arrived else None
+        route["interrupted_s"] = _interrupted_seconds(entries)
+        route["unresolved"] = any(e["kind"] == "unresolved" for e in entries)
+    # Newest first. File order is chronological; the start time breaks ties and fixes any odd ordering.
+    routes = [r for _, r in sorted(enumerate(routes), key=lambda ir: (ir[1]["started_iso"] or "", ir[0]), reverse=True)]
+    return {
+        "routes": routes,
+        "totals": {
+            "routes": len(routes),
+            "incidents": sum(r["incidents"] for r in routes),
+            "arrived": sum(1 for r in routes if r["arrived"]),
+            "interrupted_s": sum(r["interrupted_s"] for r in routes),
+        },
+    }
