@@ -7,6 +7,7 @@ No administrator rights are needed: the iOS 17+ developer tunnel runs in userspa
 import argparse
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
@@ -22,9 +23,11 @@ from backend.errors import DeviceError, explain
 from backend.devices import DeviceManager
 from backend.drivelog import LOG_PATH, DriveLog
 from backend.geo import offset_m
+from backend.keepawake import SUPPORTED as KEEP_AWAKE_SUPPORTED
+from backend.keepawake import KeepAwake
 from backend.location import LocationService, PreviewSession
 from backend.paths import DATA_DIR, WEB_DIR
-from backend.places import PlacesStore, RoutesStore
+from backend.places import JsonStore, PlacesStore, RoutesStore
 from backend.playback import RoutePlayer
 from backend.routing import FIXED_SPEEDS_KMH, Route, build_route
 
@@ -83,6 +86,14 @@ player = RoutePlayer()
 drive_log = DriveLog(player)
 devices.listeners.append(drive_log.on_event)
 saved_routes = RoutesStore()
+settings = JsonStore("settings.json", {})
+keep_awake = KeepAwake()
+keep_awake.enabled = bool(settings.read().get("keep_awake", False))
+drive_log.header_extra = lambda: (
+    f"Keep computer awake: {'on' if keep_awake.enabled else 'off'}" if KEEP_AWAKE_SUPPORTED else "Keep computer awake: not supported here"
+)
+POWER_CHECK_S = 5
+SLEEP_GAP_S = 30  # a check that runs this late means the computer was asleep
 routes: dict[str, Route] = {}  # recently built/loaded routes, by id
 MAX_ROUTES_IN_MEMORY = 10
 
@@ -96,11 +107,38 @@ def _remember_route(route: Route, route_id: Optional[str] = None) -> str:
     return route_id
 
 
+def _spoof_in_use() -> bool:
+    """A location is being held on a phone, or a route is driving one."""
+    return player.device_udid is not None or any(s.last is not None for s in locations.sessions.values())
+
+
+async def _power_watch() -> None:
+    """Hold the no-sleep request while spoofing (if enabled), and notice when the computer slept anyway."""
+    last = time.time()
+    while True:
+        await asyncio.sleep(POWER_CHECK_S)
+        now = time.time()
+        gap = now - last - POWER_CHECK_S
+        last = now
+        if gap > SLEEP_GAP_S and _spoof_in_use():
+            logger.warning(f"computer was asleep for about {int(gap)}s")
+            for session in locations.sessions.values():
+                if session.last is not None:
+                    devices.emit("computer_slept", session.udid, asleep_s=gap)
+        try:
+            keep_awake.update(_spoof_in_use())
+        except Exception:
+            logger.exception("keep-awake update failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     asyncio.get_running_loop().set_exception_handler(_loop_exception_handler)
     await devices.start()
+    power_task = asyncio.create_task(_power_watch())
     yield
+    power_task.cancel()
+    keep_awake.release()
     player.stop()
     await locations.shutdown(clear=True)  # give the phone its real location back
     await devices.stop()
@@ -367,6 +405,38 @@ async def playback_control(action: Literal["pause", "resume", "stop"]):
 @app.get("/api/playback")
 async def playback_status():
     return player.status.to_json()
+
+
+# ---------- keep the computer awake while spoofing ----------
+
+
+class KeepAwakeToggle(BaseModel):
+    enabled: bool
+
+
+def _keep_awake_status() -> dict:
+    return {
+        "supported": KEEP_AWAKE_SUPPORTED,
+        "enabled": keep_awake.enabled,
+        "active": keep_awake.active,
+        "spoofing": _spoof_in_use(),
+        "error": keep_awake.error,
+    }
+
+
+@app.get("/api/keep-awake")
+async def keep_awake_status():
+    return _keep_awake_status()
+
+
+@app.post("/api/keep-awake")
+async def keep_awake_toggle(body: KeepAwakeToggle):
+    if body.enabled and not KEEP_AWAKE_SUPPORTED:
+        raise HTTPException(400, "Keeping the computer awake isn't supported on this system.")
+    keep_awake.enabled = body.enabled
+    settings.write({**settings.read(), "keep_awake": body.enabled})
+    keep_awake.update(_spoof_in_use())
+    return _keep_awake_status()
 
 
 # ---------- drive log (disconnects / lost spoof during a route) ----------

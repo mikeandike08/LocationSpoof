@@ -37,6 +37,10 @@ INFO_TTL_S = 30
 SCAN_INTERVAL_S = 2.5
 FORGET_DISCONNECTED_S = 15 * 60
 TUNNEL_OPEN_TIMEOUT_S = 30
+# A phone has to be missing from this many device checks in a row (~7.5 s) to count as
+# disconnected: Wi-Fi devices flicker in and out of the list, and one blip shouldn't tear down
+# the tunnel (which is what actually sends the phone back to its real location).
+MISSING_SCANS_TO_DISCONNECT = 3
 
 
 def _version(text: Optional[str]) -> Version:
@@ -68,6 +72,7 @@ class DeviceRecord:
     error: Optional[str] = None
     needs: Optional[str] = None  # "developer_mode" | "passcode"
     disconnected_at: Optional[float] = None
+    missing_scans: int = 0  # consecutive device checks this phone was absent from
     # tunnel health
     tunnel_state: str = "none"  # none | connecting | ok | failed
     tunnel_attempts: int = 0
@@ -104,6 +109,7 @@ class DeviceManager:
         self._jobs: dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
         self.usbmux_error: Optional[str] = None
+        self._usbmux_error_since: Optional[float] = None
         # Called as listener(kind, udid, data) for connection events (see emit()).
         self.listeners: list[Callable[[str, str, dict], None]] = []
 
@@ -146,12 +152,26 @@ class DeviceManager:
     async def _scan(self) -> None:
         try:
             mux_devices = await usbmux.list_devices()
-            if self.usbmux_error:
-                logger.info("usbmuxd reachable again")
-            self.usbmux_error = None
         except Exception as e:
-            self.usbmux_error = explain(e)
-            mux_devices = []
+            # A failed check says nothing about the phones: keep their state (and the tunnel) as is.
+            # (Not explain(): its connection-error wording blames the cable, which this isn't.)
+            error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            if self.usbmux_error is None:
+                self._usbmux_error_since = time.monotonic()
+                logger.warning(f"device check failed: {error}")
+                for record in self.devices.values():
+                    if record.connected:
+                        record.log(f"Device check failed ({error}). Keeping the connection; retrying.", "warn")
+                        self.emit("device_check_failed", record.udid, error=error)
+            self.usbmux_error = error
+            return
+        if self.usbmux_error is not None:
+            down = time.monotonic() - (self._usbmux_error_since or time.monotonic())
+            logger.info(f"device checks working again after {down:.0f}s")
+            for record in self.devices.values():
+                if record.connected:
+                    self.emit("device_check_ok", record.udid, down_s=down)
+            self.usbmux_error = self._usbmux_error_since = None
 
         connections: dict[str, set[str]] = {}
         for dev in mux_devices:
@@ -173,6 +193,7 @@ class DeviceManager:
                 record.log(f"Now connected via {' + '.join(sorted(conns))}")
             record.connections = conns
             record.disconnected_at = None
+            record.missing_scans = 0
             if not record.busy:
                 await self._refresh_info(record)
 
@@ -180,6 +201,10 @@ class DeviceManager:
             if udid in connections:
                 continue
             if record.connected:
+                record.missing_scans += 1
+                if record.missing_scans < MISSING_SCANS_TO_DISCONNECT:
+                    continue  # might be a blip; wait for the next check
+                record.missing_scans = 0
                 record.connections = set()
                 record.disconnected_at = now
                 record.tunnel_state = "none"
@@ -287,6 +312,7 @@ class DeviceManager:
                 record.tunnel_state = "connecting"
                 record.next_tunnel_try = 0
             await self._close_tunnel()
+        self.emit("tunnel_reset", udid, reason=reason)
 
     def _no_tunnel_error(self, udid: str) -> DeviceError:
         record = self.devices.get(udid)

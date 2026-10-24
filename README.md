@@ -10,6 +10,7 @@ Spoof your iPhone's GPS location from your Mac or Windows PC using a local web p
 - **Stays at the destination**: when a route finishes, the destination is re-applied every minute until you stop it.
 - **Saved routes**: saved with the full road geometry and speeds, so they load and play **without internet**. Map areas you've viewed are cached too.
 - **Route preview**: play a route on the map without moving the phone (automatic when no iPhone is connected), at up to 20× speed, to check a route before driving it for real.
+- **Keep computer awake**: optional. Stops the computer from going to sleep while the iPhone is spoofed, since a sleeping computer sends the phone back to its real location.
 - **Disconnect log**: for long or overnight drives. A plain-text log of every time the iPhone disconnects or drops back to its real location, how long it took to recover, and when the route arrived.
 - **Arrow keys / WASD** nudge the location a few meters at a time.
 
@@ -57,11 +58,14 @@ On the Route card, click **● Start disconnect log** before pressing Play. The 
 | Entry | Meaning |
 |---|---|
 | `DISCONNECTED` / `RECONNECTED` | The iPhone dropped off USB/Wi-Fi, and how long until it came back. |
-| `REAL LOCATION` / `SPOOF RESTORED` | The phone stopped receiving the spoof (so it likely showed its real location), and how long until it was re-applied. |
+| `REAL LOCATION` / `SPOOF RESTORED` | The phone stopped receiving the spoof (so it likely showed its real location), with the **cause** (connection dropped, tunnel rebuilt, update timed out, computer asleep), and how long until it was re-applied. |
+| `COMPUTER SLEPT` | The computer was asleep during the route, and for how long. The phone was most likely at its real location the whole time. |
+| `TUNNEL REBUILT` | The developer tunnel stopped responding and was rebuilt. |
+| `DEVICE CHECK` | Apple's device service didn't answer for a moment. This is *not* treated as a disconnect (the connection is kept), and it's noted when the service answers again. |
 | `ARRIVED` | The route reached its destination: distance, time taken, and how many incidents it had. |
 | `UNRESOLVED` | A problem was still open when the route was stopped or logging was turned off. |
 
-Open it with **Open log file** on the Route card or **Open drive log** in the tray menu. It's saved as `drive-log.txt` in the data folder.
+Each route's header also notes whether **Keep computer awake** was on. Open the log with **Open log file** on the Route card or **Open drive log** in the tray menu. It's saved as `drive-log.txt` in the data folder.
 
 The computer can't read the iPhone's actual GPS position, so a "real location" entry is detected from its cause: on iOS 17+ the phone falls back to its real location whenever the location-simulation link breaks, and every such break is logged.
 
@@ -77,8 +81,13 @@ Routes come from [Valhalla](https://valhalla1.openstreetmap.de), a free public s
 
 The route summary shows what fraction of the route had a real posted limit. Playback runs in the app, not the browser, so it keeps going when the tab is in the background or closed. It speeds up and slows down smoothly, brakes ahead of slower roads, and adds a little speed variation so the movement looks natural.
 
+## Keeping the spoof up for hours
+- **iOS 17+ only holds the spoof while the app is running and connected.** If you quit, the phone disconnects for good, or the computer sleeps, the phone returns to its real location (expected on modern iOS).
+- **Turn on Keep computer awake** (Location card) for long drives. While a location is spoofed or a route is running, it stops the computer from going to sleep on its own, and lets it sleep normally again once neither is. The screen can still turn off. Closing a laptop lid or choosing Sleep still sleeps the computer, so keep the lid open or set the lid action to "Do nothing" while plugged in. The setting is remembered.
+- **Turn off automatic iOS updates** on the phone for overnight runs (Settings → General → Software Update → Automatic Updates). An overnight update restarts the phone, which shows its real location until the app reconnects.
+- **Short blips don't drop the spoof.** A phone has to be missing from 3 device checks in a row (about 7.5 s) to count as disconnected, a failed device check isn't treated as a disconnect at all, and a failed location update is retried on a fresh channel before the tunnel is rebuilt.
+
 ## Notes and limits
-- **iOS 17+ only holds the spoof while the app is running.** Keep the app running. If you quit or the phone disconnects for good, the phone returns to its real location (expected on modern iOS).
 - iOS 16 and older work over USB without the tunnel.
 - Free public services: OpenStreetMap tiles, Photon (suggestions as you type), Nominatim (Enter-key search and reverse lookup), Valhalla (routing), with OSRM as a fallback. Please keep usage personal and light. You can point the app at other servers with the `LOCSPOOF_VALHALLA_URL`, `LOCSPOOF_PHOTON_URL`, `LOCSPOOF_NOMINATIM_URL` and `LOCSPOOF_OSRM_URL` environment variables.
 - The app only listens on `127.0.0.1`, so other devices on your network can't reach it.
@@ -172,7 +181,8 @@ backend/
   launcher.py   tray / menu-bar launcher (runs the server in the background)
   paths.py      where web files and user data live (source checkout vs packaged app)
   version.py    app version (bump before tagging a release)
-  drivelog.py   disconnect / lost-spoof / arrival log written during routes
+  drivelog.py   disconnect / lost-spoof / sleep / arrival log written during routes, with causes
+  keepawake.py  optional "keep computer awake" while spoofing (Windows / macOS)
   devices.py    discovery, pairing, Developer Mode, disk image, userspace developer tunnel
   location.py   holds the location channel open, auto-reconnects, re-applies the last fix
   playback.py   moves along a route with per-segment speeds

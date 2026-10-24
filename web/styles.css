@@ -388,6 +388,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 #save-route-btn.saved { color: var(--ok); border-color: var(--ok); }
 .place-meta { font-size: 12px; color: var(--muted); }
 
+/* keep awake */
+.keep-awake { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.keep-awake .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
 /* drive log */
 .drive-log { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .drive-log a { color: var(--accent); text-decoration: none; }

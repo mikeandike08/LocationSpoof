@@ -1,9 +1,10 @@
 """Drive log: a plain-text record of every time a route loses the iPhone or its spoofed location.
 
 An entry is added when, during a route (or while parked at its destination afterwards), the iPhone
-disconnects or stops receiving the spoof, and again when it recovers, with how long that took and
-where the route was at the time. A route that reaches its destination gets an ARRIVED entry with
-its distance, how long it took, and how many incidents it had.
+disconnects or stops receiving the spoof, and again when it recovers, with how long that took,
+where the route was at the time, and the likely cause (cable/Wi-Fi, a rebuilt developer tunnel, a
+timed-out update, the computer sleeping). A route that reaches its destination gets an ARRIVED entry
+with its distance, how long it took, and how many incidents it had.
 
 The computer can't read the iPhone's actual GPS fix, so "reset to real location" is detected from
 its cause: on iOS 17+ the phone falls back to its real location whenever the location-simulation
@@ -14,12 +15,27 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from backend.paths import DATA_DIR
 from backend.playback import RoutePlayer
 
 LOG_PATH = DATA_DIR / "drive-log.txt"
+WAKE_WINDOW_S = 60  # a lost spoof this soon after the computer wakes is blamed on the sleep
+
+
+def _cause(reason: str) -> str:
+    """A short, plain cause for a lost spoof, from the low-level reason."""
+    r = reason.lower()
+    if "disconnected" in r or "isn't connected" in r or "lost the connection" in r:
+        return "iPhone connection dropped"
+    if "tunnel was replaced" in r or "tunnel" in r:
+        return "developer tunnel was rebuilt"
+    if "timed out" in r:
+        return "location update timed out"
+    if "channel closed" in r:
+        return "location channel was closed"
+    return "location update failed"
 
 
 def _stamp(t: Optional[float] = None) -> str:
@@ -54,6 +70,8 @@ class DriveLog:
         self._disconnected_at: Optional[float] = None
         self._lost_at: Optional[float] = None
         self._lost_reason: Optional[str] = None
+        self._woke_at: Optional[float] = None  # when the computer was last found to have slept
+        self.header_extra: Optional[Callable[[], str]] = None  # extra line for each route's header
         player.on_stop = self._route_stopped
         player.on_finish = self._route_finished
 
@@ -104,17 +122,47 @@ class DriveLog:
         elif kind == "spoof_lost":
             self._lost_at = now
             self._lost_reason = data.get("reason") or "unknown"
-            self._count_incident()
+            after_sleep = self._woke_at is not None and now - self._woke_at < WAKE_WINDOW_S
+            if after_sleep:
+                cause = "the computer was asleep (see COMPUTER SLEPT above)"
+            else:
+                self._count_incident()
+                cause = _cause(self._lost_reason)
             self._write(
                 "error",
                 "REAL LOCATION",
-                f"Spoof interrupted ({self._lost_reason}). The iPhone has likely fallen back to its real location "
-                f"({self._real()}). Spoofed position was {where}.",
+                f"Spoof interrupted. Cause: {cause}. Details: {self._lost_reason.rstrip('.')}. The iPhone has likely fallen "
+                f"back to its real location ({self._real()}). Spoofed position was {where}.",
             )
         elif kind == "spoof_restored":
             down = data.get("down_s", 0)
             self._lost_at = None
             self._write("ok", "SPOOF RESTORED", f"Spoofed location re-applied after {_duration(down)} at {_coord(data.get('position'))}.")
+        elif kind == "computer_slept":
+            self._woke_at = now
+            self._count_incident()
+            self._write(
+                "error",
+                "COMPUTER SLEPT",
+                f"The computer was asleep for about {_duration(data.get('asleep_s', 0))}. The app was paused, so the "
+                f"iPhone was most likely at its real location ({self._real()}) for that long. Turn on 'Keep "
+                f"computer awake' to prevent idle sleep (closing a laptop lid still sleeps). Route position: {where}.",
+            )
+        elif kind == "tunnel_reset":
+            self._write(
+                "warn",
+                "TUNNEL REBUILT",
+                f"The developer tunnel stopped responding ({data.get('reason', 'unknown')}) and is being rebuilt.",
+            )
+        elif kind == "device_check_failed":
+            self._write(
+                "warn",
+                "DEVICE CHECK",
+                f"Apple's device service didn't answer ({data.get('error', 'unknown')}). Not treated as a "
+                f"disconnect: the connection to the iPhone was kept.",
+            )
+        elif kind == "device_check_ok":
+            self._write("ok", "DEVICE CHECK", f"Apple's device service is answering again after {_duration(data.get('down_s', 0))}.")
 
     def _count_incident(self) -> None:
         if self._counted_for != self.player.started_at:
@@ -180,6 +228,8 @@ class DriveLog:
                 f"logging since {_stamp(self.enabled_at)} ===",
                 f"    Real location (before spoofing): {self._real()}",
             ]
+            if self.header_extra:
+                lines.append(f"    {self.header_extra()}")
         lines.append(f"{stamp}  {tag:<15} {message}")
         with self._lock:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
