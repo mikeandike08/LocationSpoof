@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drive log · LocationSpoof</title>
+  <link rel="stylesheet" href="/static/drive-log.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div>
+        <h1>Drive log</h1>
+        <p class="muted">Every disconnect, lost spoof and arrival, grouped by route. Newest first.</p>
+      </div>
+      <div class="topbar-actions">
+        <span id="live" class="live-pill" title="This page refreshes on its own while logging is on">
+          <span class="live-dot"></span><span id="live-text">Loading…</span>
+        </span>
+        <a class="btn" href="/drive-log.txt" download="drive-log.txt">Download .txt</a>
+        <a class="btn" href="/">Back to app</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="tiles" aria-label="Summary">
+      <div class="tile"><span id="t-routes" class="tile-value">–</span><span class="tile-label">routes logged</span></div>
+      <div class="tile"><span id="t-incidents" class="tile-value">–</span><span class="tile-label">incidents</span></div>
+      <div class="tile"><span id="t-down" class="tile-value">–</span><span class="tile-label">spoof interrupted</span></div>
+      <div class="tile"><span id="t-arrived" class="tile-value">–</span><span class="tile-label">routes arrived</span></div>
+    </section>
+
+    <section class="toolbar" aria-label="Filters">
+      <div class="segmented" id="filter" role="radiogroup" aria-label="Which entries to show">
+        <button data-value="all" class="active" role="radio" aria-checked="true">All entries</button>
+        <button data-value="problems" role="radio" aria-checked="false">Problems only</button>
+      </div>
+      <input id="search" type="search" placeholder="Search messages, e.g. tunnel, USB, asleep" aria-label="Search the log">
+    </section>
+
+    <div id="routes"></div>
+
+    <div id="empty" class="empty hidden">
+      <div class="empty-icon" aria-hidden="true">🛣️</div>
+      <h2>No incidents logged yet</h2>
+      <p class="muted">Turn on <b>Start disconnect log</b> on the Route card before a drive. Every time the iPhone disconnects
+        or drops back to its real location, it shows up here, along with when the route arrives.</p>
+    </div>
+    <div id="no-match" class="empty hidden">
+      <h2>Nothing matches</h2>
+      <p class="muted">Try a different search or show all entries.</p>
+    </div>
+
+    <p id="path" class="footnote muted"></p>
+  </main>
+
+  <script type="module" src="/static/drive-log.js"></script>
+</body>
+</html>

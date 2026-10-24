@@ -1371,7 +1371,7 @@ $("#drive-log-toggle").addEventListener("click", async () => {
     }
     state.driveLog = await api("/api/drive-log", { method: "POST", body });
     renderDriveLog();
-    toast(body.enabled ? "Disconnect log on. Open it any time with the Open log file link." : "Disconnect log off.");
+    toast(body.enabled ? "Disconnect log on. Open it any time with the Open drive log link." : "Disconnect log off.");
   } catch (e) {
     toast(e.message, "error");
   }
