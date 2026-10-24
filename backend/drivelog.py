@@ -1,8 +1,9 @@
 """Drive log: a plain-text record of every time a route loses the iPhone or its spoofed location.
 
-Nothing is written while things are working. An entry is added only when, during a route (or while
-parked at its destination afterwards), the iPhone disconnects or stops receiving the spoof, and
-again when it recovers, with how long that took and where the route was at the time.
+An entry is added when, during a route (or while parked at its destination afterwards), the iPhone
+disconnects or stops receiving the spoof, and again when it recovers, with how long that took and
+where the route was at the time. A route that reaches its destination gets an ARRIVED entry with
+its distance, how long it took, and how many incidents it had.
 
 The computer can't read the iPhone's actual GPS fix, so "reset to real location" is detected from
 its cause: on iOS 17+ the phone falls back to its real location whenever the location-simulation
@@ -45,6 +46,8 @@ class DriveLog:
         self.enabled_at: Optional[float] = None
         self.real_location: Optional[dict] = None  # {"lat", "lng", "label"}
         self.incidents = 0
+        self.route_incidents = 0  # incidents since the current route started
+        self._counted_for: Optional[float] = None  # route start time route_incidents belongs to
         self.entries: deque = deque(maxlen=100)  # recent entries for the UI, newest first
         self._lock = threading.Lock()
         self._header_for: Optional[float] = None  # route start time the header was written for
@@ -52,6 +55,7 @@ class DriveLog:
         self._lost_at: Optional[float] = None
         self._lost_reason: Optional[str] = None
         player.on_stop = self._route_stopped
+        player.on_finish = self._route_finished
 
     # ---------- control ----------
 
@@ -60,6 +64,8 @@ class DriveLog:
         self.enabled_at = time.time()
         self.real_location = real_location
         self.incidents = 0
+        self.route_incidents = 0
+        self._counted_for = None
         self._header_for = None
         self._disconnected_at = self._lost_at = None
 
@@ -89,7 +95,7 @@ class DriveLog:
         where = self._where()
         if kind == "disconnected":
             self._disconnected_at = now
-            self.incidents += 1
+            self._count_incident()
             self._write("error", "DISCONNECTED", f"iPhone disconnected. Spoofed position at the time: {where}.")
         elif kind == "reconnected":
             away = now - self._disconnected_at if self._disconnected_at is not None else data.get("away_s", 0)
@@ -98,7 +104,7 @@ class DriveLog:
         elif kind == "spoof_lost":
             self._lost_at = now
             self._lost_reason = data.get("reason") or "unknown"
-            self.incidents += 1
+            self._count_incident()
             self._write(
                 "error",
                 "REAL LOCATION",
@@ -109,6 +115,26 @@ class DriveLog:
             down = data.get("down_s", 0)
             self._lost_at = None
             self._write("ok", "SPOOF RESTORED", f"Spoofed location re-applied after {_duration(down)} at {_coord(data.get('position'))}.")
+
+    def _count_incident(self) -> None:
+        if self._counted_for != self.player.started_at:
+            self._counted_for = self.player.started_at
+            self.route_incidents = 0
+        self.incidents += 1
+        self.route_incidents += 1
+
+    def _route_finished(self) -> None:
+        if not self.enabled or self.player.device_udid is None:
+            return
+        st = self.player.status
+        had = self.route_incidents if self._counted_for == self.player.started_at else 0
+        issues = "no incidents" if had == 0 else f"{had} incident{'s' if had != 1 else ''}"
+        self._write(
+            "ok" if had == 0 else "warn",
+            "ARRIVED",
+            f"Route completed: {st.total_m / 1609.34:.1f} mi in {_duration(time.time() - self.player.started_at)}, "
+            f"{issues}. Holding at the destination {_coord(st.position)}.",
+        )
 
     def _route_stopped(self) -> None:
         if self.enabled:

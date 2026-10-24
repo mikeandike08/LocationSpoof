@@ -181,3 +181,6 @@ cython_debug/
 .cursorindexingignore
 # LocationSpoof local data (saved places, settings)
 data/
+
+# The PyInstaller spec is source, not a generated file
+!packaging/*.spec

@@ -11,7 +11,16 @@ Spoof your iPhone's GPS location from your Mac or Windows PC using a local web p
 
 It uses Apple's developer location simulation, the same mechanism Xcode uses, through [pymobiledevice3](https://github.com/doronz88/pymobiledevice3).
 
-## Quick start
+## Install
+
+Download the installer from the [Releases](../../releases) page. Nothing else is needed, not even Python.
+
+- **Windows:** run `LocationSpoof-Setup-<version>.exe`. It installs for your user account only (no admin prompt) and adds a Start menu shortcut. Because the installer isn't code-signed, SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. You also need Apple's iPhone driver, the free **Apple Devices** app from the Microsoft Store (or iTunes); the installer offers a link if it's missing.
+- **macOS (Apple Silicon):** open the `.dmg` and drag LocationSpoof to Applications. The app isn't notarized, so the first time, right-click it and choose **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
+
+LocationSpoof runs in the background with an icon in the system tray (Windows) or menu bar (macOS). Click it to open the app in your browser. **Quit** in its menu stops the app and restores the phone's real location. The installed app keeps its data in `%APPDATA%\LocationSpoof` (Windows) or `~/Library/Application Support/LocationSpoof` (macOS).
+
+## Run from source
 
 **macOS**
 ```bash
@@ -21,7 +30,7 @@ Press **Ctrl+C** to quit.
 
 **Windows**
 
-1. Install [Python](https://www.python.org/downloads/) **3.12** (3.10 to 3.13 work; 3.14 doesn't yet, because one of pymobiledevice3's packages has no Windows build for it). Multiple versions can be installed side by side; setup picks a compatible one.
+1. Install [Python](https://www.python.org/downloads/) **3.13** (`winget install Python.Python.3.13`). Other versions don't work on Windows: on 3.12 and older the iOS 17.4+ tunnel depends on a package whose Windows build is broken, and 3.14 has no Windows build of `pylzss` yet. It can sit alongside other Python versions; setup finds it.
 2. Install Apple's iPhone driver: the **Apple Devices** app from the Microsoft Store (or iTunes). Open it once with the iPhone plugged in so the phone gets recognized.
 3. Double-click **`run.bat`**.
 
@@ -79,6 +88,19 @@ Searching and building **new** routes need internet. Saved routes and saved plac
 - **Windows: "Apple's device service isn't running"**: install the Apple Devices app (Microsoft Store) or iTunes, open it once with the iPhone plugged in, and try again.
 - **"The developer tunnel isn't up yet"**: keep the phone unlocked and check that Developer Mode is on; the app retries automatically.
 - **Page says it can't reach the server**: check that only one copy of LocationSpoof is running (an old `sudo` copy from an earlier version will fight over the phone). Quit all copies and start again with `./run.sh` (or `run.bat`). Details are in `data/server.log`.
+
+## Building the installers
+Each installer has to be built on its own OS. Pushing a version tag builds both on GitHub Actions (`.github/workflows/installers.yml`) and attaches them to a **draft** release:
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+You can also run the workflow by hand from the Actions tab. To build locally, from the project's venv:
+```bash
+pip install -r packaging/requirements-build.txt
+python packaging/build.py
+```
+The result goes to `dist/installer/`. Windows needs [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`). Bump `backend/version.py` before tagging. To use your own app icon, add a 1024×1024 `packaging/icon.png`; otherwise the build draws the map pin the tray uses.
 
 ## Project layout
 ```

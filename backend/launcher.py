@@ -29,6 +29,7 @@ import uvicorn  # noqa: E402
 
 from backend import main as server_main  # noqa: E402
 from backend.paths import DATA_DIR, IS_MAC, IS_WINDOWS  # noqa: E402
+from backend.version import __version__  # noqa: E402
 
 logger = logging.getLogger("locationspoof.launcher")
 
@@ -64,18 +65,22 @@ def _open_path(path) -> None:
         subprocess.Popen(["xdg-open", path])
 
 
-def _icon_image():
-    """A map-pin icon drawn in code, so no image file has to ship with the app."""
+def icon_image(size: int = 64):
+    """A map-pin icon drawn in code (also used to build the installers' .ico/.icns files)."""
     from PIL import Image, ImageDraw
 
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    big = size * 4  # draw large, then scale down for smooth edges
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     blue = (37, 99, 235, 255)
-    d.ellipse((12, 4, 52, 44), fill=blue)
-    d.polygon([(16, 32), (48, 32), (32, 62)], fill=blue)
-    d.ellipse((24, 16, 40, 32), fill=(255, 255, 255, 255))
-    return img
+
+    def box(*fractions):
+        return [f * big for f in fractions]
+
+    d.ellipse(box(0.1875, 0.0625, 0.8125, 0.6875), fill=blue)
+    d.polygon([tuple(box(0.25, 0.5)), tuple(box(0.75, 0.5)), tuple(box(0.5, 0.97))], fill=blue)
+    d.ellipse(box(0.375, 0.25, 0.625, 0.5), fill=(255, 255, 255, 255))
+    return img.resize((size, size), Image.LANCZOS)
 
 
 class Server:
@@ -126,8 +131,41 @@ def _run_tray(url: str, server: Server) -> None:
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit (restores real location)", quit_app),
     )
-    icon = pystray.Icon("LocationSpoof", _icon_image(), f"LocationSpoof ({url})", menu)
+    icon = pystray.Icon("LocationSpoof", icon_image(), f"LocationSpoof {__version__} ({url})", menu)
     icon.run()  # blocks until Quit; must be on the main thread (required on macOS)
+
+
+def smoke_test() -> int:
+    """Build check for packaged apps: start the server, hit a few URLs, load the tray backend, stop.
+
+    Writes smoke-test.log to the data folder and returns the exit code (0 = passed).
+    """
+    lines = []
+    ok = True
+    port = next(p for p in range(DEFAULT_PORT + 100, DEFAULT_PORT + 200) if _port_free(p))
+    server = Server(port)
+    try:
+        import pystray  # noqa: F401  (the platform backend is resolved on import)
+        import pymobiledevice3.remote.tunnel_service  # noqa: F401  (iOS 17+ tunnel)
+
+        icon_image()
+        if not server.start():
+            raise RuntimeError("server didn't start")
+        for path in ("/api/status", "/", "/static/app.js", "/api/devices", "/api/drive-log"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as resp:
+                lines.append(f"{path} -> {resp.status}")
+                ok = ok and resp.status == 200
+    except Exception as e:
+        ok = False
+        lines.append(f"FAILED: {e!r}")
+    finally:
+        server.stop()
+    lines.append("PASSED" if ok else "FAILED")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    report = "\n".join(lines)
+    (DATA_DIR / "smoke-test.log").write_text(report + "\n", encoding="utf-8")
+    print(report)
+    return 0 if ok else 1
 
 
 def main() -> None:
@@ -135,7 +173,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true", help="don't open the browser on start")
     parser.add_argument("--no-tray", action="store_true", help="run without a tray icon (Ctrl+C to quit)")
+    parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.smoke_test:
+        sys.exit(smoke_test())
 
     if _is_locationspoof(args.port):
         webbrowser.open(f"http://127.0.0.1:{args.port}")

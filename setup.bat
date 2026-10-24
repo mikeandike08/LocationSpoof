@@ -1,22 +1,21 @@
 @echo off
 rem One-time setup on Windows: creates .venv and installs dependencies.
-rem Set PYTHON to choose the interpreter, e.g.  set PYTHON=py -3.12
-rem Python 3.14 doesn't work yet: pymobiledevice3's pylzss has no prebuilt Windows package for it.
+rem Set PYTHON to choose the interpreter, e.g.  set PYTHON=py -3.13
+rem Python 3.13 is required on Windows:
+rem  - 3.14: pymobiledevice3's pylzss has no prebuilt Windows package for it yet.
+rem  - 3.12 and older: the iOS 17.4+ tunnel needs sslpsk_pmd3, whose Windows build is broken
+rem    (it links an OpenSSL 1.1 DLL that Python doesn't ship). 3.13 uses Python's own ssl instead.
 setlocal
 cd /d "%~dp0"
 
 if not defined PYTHON (
-  for %%v in (3.12 3.13 3.11 3.10) do (
-    if not defined PYTHON (
-      py -%%v -c "" >nul 2>nul && set "PYTHON=py -%%v"
-    )
-  )
+  py -3.13 -c "" >nul 2>nul && set "PYTHON=py -3.13"
 )
 if not defined PYTHON (
-  python -c "import sys; sys.exit(not (3, 10) <= sys.version_info[:2] <= (3, 13))" >nul 2>nul && set "PYTHON=python"
+  python -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))" >nul 2>nul && set "PYTHON=python"
 )
 if not defined PYTHON (
-  echo Python 3.10 to 3.13 is required ^(3.12 recommended^). Install it from https://www.python.org/downloads/
+  echo Python 3.13 is required. Install it from https://www.python.org/downloads/ ^(or: winget install Python.Python.3.13^)
   goto :fail
 )
 
