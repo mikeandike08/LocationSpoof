@@ -94,6 +94,19 @@
         <button id="keep-awake-toggle" class="btn small" title="Stops the computer from going to sleep on its own while the iPhone is spoofed. A sleeping computer sends the iPhone back to its real location.">☾ Keep computer awake: Off</button>
         <div id="keep-awake-status" class="muted small"></div>
       </div>
+      <div class="alerts-control">
+        <button id="alerts-toggle" class="btn small" title="Play a sound and flash the screen edges when the iPhone disconnects or drops back to its real location.">🔔 Alerts: Off</button>
+        <div id="alerts-options" class="alerts-options hidden">
+          <label class="check"><input id="alert-opt-sound" type="checkbox"> Sound</label>
+          <label class="check"><input id="alert-opt-flash" type="checkbox"> Flash screen edges</label>
+          <label class="check"><input id="alert-opt-recovery" type="checkbox"> Chime when it recovers</label>
+          <label class="alert-volume muted small">Volume
+            <input id="alert-opt-volume" type="range" min="0" max="1" step="0.05" value="0.7">
+          </label>
+          <button id="alert-test" class="btn small" type="button">Test alert</button>
+        </div>
+        <div id="alerts-status" class="muted small"></div>
+      </div>
       <div class="nudge">
         <label class="muted small" for="nudge-step">Arrow keys / WASD move by</label>
         <select id="nudge-step">
@@ -248,6 +261,15 @@
   <main id="map"></main>
   <div id="map-legend" class="legend hidden"></div>
   <div id="toasts" class="toasts"></div>
+  <div id="alert-flash" class="alert-flash" aria-hidden="true"></div>
+  <div id="alert-bar" class="alert-bar hidden" role="alert" aria-live="assertive">
+    <span class="alert-bar-icon" aria-hidden="true">⚠</span>
+    <div class="alert-bar-text">
+      <div id="alert-bar-title" class="alert-bar-title"></div>
+      <div id="alert-bar-message" class="alert-bar-message"></div>
+    </div>
+    <button id="alert-bar-dismiss" class="btn small" type="button">Dismiss</button>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script type="module" src="/static/app.js"></script>

@@ -6,6 +6,7 @@ No administrator rights are needed: the iOS 17+ developer tunnel runs in userspa
 
 import argparse
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -13,12 +14,13 @@ from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend import geocode, tiles
+from backend.alerts import AlertCenter
 from backend.errors import DeviceError, explain
 from backend.devices import DeviceManager
 from backend.drivelog import LOG_PATH, DriveLog
@@ -85,6 +87,11 @@ places = PlacesStore()
 player = RoutePlayer()
 drive_log = DriveLog(player)
 devices.listeners.append(drive_log.on_event)
+alerts = AlertCenter(
+    lambda udid: player.device_udid == udid
+    or (udid in locations.sessions and locations.sessions[udid].last is not None)
+)
+devices.listeners.append(alerts.on_event)
 saved_routes = RoutesStore()
 settings = JsonStore("settings.json", {})
 keep_awake = KeepAwake()
@@ -439,6 +446,80 @@ async def keep_awake_toggle(body: KeepAwakeToggle):
     return _keep_awake_status()
 
 
+# ---------- alerts (sound / screen flash for critical moments) ----------
+
+ALERT_DEFAULTS = {"sound": False, "flash": False, "recovery_chime": True, "volume": 0.7}
+SSE_PING_S = 15
+GRACEFUL_SHUTDOWN_S = 5  # cap on waiting for open connections when the app quits
+
+
+def _server_exiting() -> bool:
+    """True once uvicorn has been asked to stop (set by main() and the tray launcher)."""
+    server = getattr(app.state, "uvicorn_server", None)
+    return bool(server and server.should_exit)
+
+
+class AlertSettings(BaseModel):
+    sound: Optional[bool] = None
+    flash: Optional[bool] = None
+    recovery_chime: Optional[bool] = None
+    volume: Optional[float] = Field(None, ge=0, le=1)
+
+
+def _alert_settings() -> dict:
+    return {**ALERT_DEFAULTS, **settings.read().get("alerts", {})}
+
+
+@app.get("/api/alert-settings")
+async def get_alert_settings():
+    return _alert_settings()
+
+
+@app.post("/api/alert-settings")
+async def set_alert_settings(body: AlertSettings):
+    merged = {**_alert_settings(), **body.model_dump(exclude_none=True)}
+    settings.write({**settings.read(), "alerts": merged})
+    return merged
+
+
+@app.get("/api/alerts")
+async def list_alerts(after: int = 0):
+    return alerts.describe(after)
+
+
+@app.post("/api/alerts/test")
+async def test_alert():
+    return alerts.test()
+
+
+@app.get("/api/alerts/stream")
+async def alert_stream(request: Request):
+    """Server-Sent Events: one `data:` message per alert as it happens."""
+    queue = alerts.subscribe()
+
+    async def events():
+        try:
+            yield f"event: hello\ndata: {json.dumps(alerts.describe(after=alerts.last_id))}\n\n"
+            last_ping = time.monotonic()
+            # End the stream as soon as the app is quitting: an open stream would otherwise hold up
+            # shutdown, and with it the shutdown hook that stops routes and clears the spoof.
+            while not _server_exiting() and not await request.is_disconnected():
+                try:
+                    alert = await asyncio.wait_for(queue.get(), timeout=1)
+                    yield f"id: {alert['id']}\ndata: {json.dumps(alert)}\n\n"
+                except asyncio.TimeoutError:
+                    if time.monotonic() - last_ping >= SSE_PING_S:
+                        last_ping = time.monotonic()
+                        # Heartbeat: keeps the stream open and lets the page notice if it goes quiet.
+                        yield "event: ping\ndata: {}\n\n"
+        finally:
+            alerts.unsubscribe(queue)
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
 # ---------- drive log (disconnects / lost spoof during a route) ----------
 
 
@@ -573,7 +654,13 @@ def main() -> None:
     _setup_file_log()
     _raise_open_file_limit()
     # Standard asyncio loop (not uvloop): it's what pymobiledevice3's userspace tunnel is built on.
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", loop="asyncio")
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=args.port, log_level="warning", loop="asyncio",
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+    )
+    server = uvicorn.Server(config)
+    app.state.uvicorn_server = server  # lets long-lived streams end promptly on shutdown
+    server.run()
 
 
 if __name__ == "__main__":

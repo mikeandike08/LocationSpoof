@@ -11,6 +11,7 @@ Spoof your iPhone's GPS location from your Mac or Windows PC using a local web p
 - **Saved routes**: saved with the full road geometry and speeds, so they load and play **without internet**. Map areas you've viewed are cached too.
 - **Route preview**: play a route on the map without moving the phone (automatic when no iPhone is connected), at up to 20× speed, to check a route before driving it for real.
 - **Keep computer awake**: optional. Stops the computer from going to sleep while the iPhone is spoofed, since a sleeping computer sends the phone back to its real location.
+- **Alerts**: optional. Plays an alarm and flashes the screen edges red when something critical happens while spoofing, so you notice even from across the room or another tab.
 - **Disconnect log**: for long or overnight drives. A plain-text log of every time the iPhone disconnects or drops back to its real location, how long it took to recover, and when the route arrived.
 - **Arrow keys / WASD** nudge the location a few meters at a time.
 
@@ -68,6 +69,21 @@ On the Route card, click **● Start disconnect log** before pressing Play. The 
 Each route's header also notes whether **Keep computer awake** was on. Open the log with **Open log file** on the Route card or **Open drive log** in the tray menu. It's saved as `drive-log.txt` in the data folder.
 
 The computer can't read the iPhone's actual GPS position, so a "real location" entry is detected from its cause: on iOS 17+ the phone falls back to its real location whenever the location-simulation link breaks, and every such break is logged.
+
+## Alerts (sound and screen flash)
+
+Turn on **🔔 Alerts** on the Location card to be warned the moment something goes wrong while the iPhone is spoofed:
+
+| Alert | When |
+|---|---|
+| **iPhone disconnected** | The cable or Wi-Fi link to the iPhone dropped while spoofing. |
+| **Real location may be showing** | The iPhone stopped receiving the spoofed location, so it has likely fallen back to its real one. |
+| **Computer was asleep** | The computer slept while spoofing (the phone was at its real location meanwhile). |
+| **Lost the LocationSpoof app** | The page can't reach the app anymore (it quit or froze). |
+
+Each alert plays a two-tone alarm and flashes the screen edges red. While the problem is still ongoing, the edges keep pulsing and the tab title shows ⚠. Click **Dismiss** to stop the pulsing. When it recovers (reconnected, spoof re-applied), a soft chime plays and the edges flash green. A disconnect and the "real location" alert that follows it count as one incident, so the alarm only sounds once.
+
+Options: **Sound**, **Flash screen edges**, **Chime when it recovers**, and **Volume**. Use **Test alert** to hear and see one. The settings are remembered. Alerts are pushed to the page instantly and keep working in a background tab. Browsers only allow sound after you've clicked somewhere on the page once, so click the page after opening it.
 
 ## How routes pick speeds
 
@@ -182,6 +198,7 @@ backend/
   paths.py      where web files and user data live (source checkout vs packaged app)
   version.py    app version (bump before tagging a release)
   drivelog.py   disconnect / lost-spoof / sleep / arrival log written during routes, with causes
+  alerts.py     critical-event alerts (disconnect, real location, sleep) pushed to the page for sound + screen flash
   keepawake.py  optional "keep computer awake" while spoofing (Windows / macOS)
   devices.py    discovery, pairing, Developer Mode, disk image, userspace developer tunnel
   location.py   holds the location channel open, auto-reconnects, re-applies the last fix
