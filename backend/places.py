@@ -1,24 +1,12 @@
 """Saved places, stored as a JSON file under data/."""
 
 import json
-import os
 import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Optional
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-
-
-def _chown_to_invoking_user(path: Path) -> None:
-    # The server runs under sudo; hand files back to the real user so they stay editable.
-    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
-    if uid and gid:
-        try:
-            os.chown(path, int(uid), int(gid))
-        except OSError:
-            pass
+from backend.paths import DATA_DIR
 
 
 class JsonStore:
@@ -31,16 +19,14 @@ class JsonStore:
         with self.lock:
             if not self.path.exists():
                 return json.loads(json.dumps(self.default))
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
 
     def write(self, data: Any) -> None:
         with self.lock:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _chown_to_invoking_user(DATA_DIR)
             tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, indent=2))
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
             tmp.replace(self.path)
-            _chown_to_invoking_user(self.path)
 
 
 class PlacesStore:

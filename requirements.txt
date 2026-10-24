@@ -3,3 +3,5 @@ fastapi>=0.142
 uvicorn[standard]>=0.54
 httpx>=0.28
 packaging
+pystray>=0.19
+pillow>=10

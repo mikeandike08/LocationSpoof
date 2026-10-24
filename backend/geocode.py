@@ -152,7 +152,7 @@ async def search(query: str, near: Optional[tuple[float, float]] = None, limit: 
 
 
 async def approximate_location() -> Optional[dict]:
-    """City-level location of this Mac from its public IP (fallback when browser geolocation is denied)."""
+    """City-level location of this computer from its public IP (fallback when browser geolocation is denied)."""
     key = ("ip-location",)
     if (hit := _cached(key)) is not None:
         return hit

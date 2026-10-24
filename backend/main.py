@@ -1,6 +1,7 @@
 """LocationSpoof local web server.
 
-Run with:  sudo ./run.sh   (root is needed to create device tunnels on iOS 17+)
+Run with ./run.sh (macOS) or run.bat (Windows), or `python -m backend.launcher` for the tray app.
+No administrator rights are needed: the iOS 17+ developer tunnel runs in userspace.
 """
 
 import argparse
@@ -8,7 +9,6 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Literal, Optional
 
 import uvicorn
@@ -19,10 +19,11 @@ from pydantic import BaseModel, Field
 
 from backend import geocode, tiles
 from backend.errors import DeviceError, explain
-from backend.devices import DeviceManager, is_root
+from backend.devices import DeviceManager
 from backend.drivelog import LOG_PATH, DriveLog
 from backend.geo import offset_m
 from backend.location import LocationService, PreviewSession
+from backend.paths import DATA_DIR, WEB_DIR
 from backend.places import PlacesStore, RoutesStore
 from backend.playback import RoutePlayer
 from backend.routing import FIXED_SPEEDS_KMH, Route, build_route
@@ -38,19 +39,19 @@ def _setup_file_log() -> None:
     """Also log to data/server.log (rotated) so problems can be diagnosed after the fact."""
     from logging.handlers import RotatingFileHandler
 
-    from backend.places import DATA_DIR, _chown_to_invoking_user
-
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = DATA_DIR / "server.log"
-    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=2)
+    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logging.getLogger().addHandler(handler)
-    _chown_to_invoking_user(path)
 
 
 def _raise_open_file_limit() -> None:
     # macOS defaults to 256 open files, which a burst of device/tile connections can exhaust.
-    import resource
+    try:
+        import resource
+    except ImportError:
+        return  # Windows: no such limit to raise
 
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     target = min(8192, hard) if hard != resource.RLIM_INFINITY else 8192
@@ -74,7 +75,6 @@ def _loop_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> N
             exc_info=exc if count == 1 else None,
         )
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 devices = DeviceManager()
 locations = LocationService(devices)
@@ -120,8 +120,7 @@ def _http_error(e: Exception) -> HTTPException:
 
 @app.get("/api/status")
 async def status():
-    # Root is no longer needed: the developer tunnel runs in userspace.
-    return {"root": is_root(), "admin_required": False, "tunnel_error": None}
+    return {"admin_required": False, "tunnel_error": None}
 
 
 @app.get("/api/devices")

@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/bin/python",
       "runtimeArgs": ["-m", "backend.main", "--port", "8766"],
       "port": 8766
+    },
+    {
+      "name": "locationspoof-dev-windows",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "backend.main", "--port", "8766"],
+      "port": 8766
     }
   ]
 }
