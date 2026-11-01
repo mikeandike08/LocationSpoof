@@ -146,6 +146,14 @@ Press **Ctrl+C** to quit. For the menu-bar app instead: `.venv/bin/python -m bac
 
 Either way, the first run creates `.venv` and installs dependencies, then opens http://127.0.0.1:8765. No administrator password is needed: the iOS 17+ developer tunnel runs inside the app (pymobiledevice3's userspace tunnel).
 
+## Raspberry Pi device (experimental)
+
+A theoretical pocket version: a Raspberry Pi Zero 2 W with a 2" screen and four buttons, plugged into the iPhone. Each button teleports to a preset place (assign them with the **#** button next to a saved place), and holding a button restores the real location. It hasn't been run on a real Pi yet, but everything except the display driver can be tried on any computer with the simulator:
+```bash
+python -m backend.pi --driver sim
+```
+Then open http://127.0.0.1:8765/pi-sim. Hardware, install steps and open questions are in **[docs/raspberry-pi.md](docs/raspberry-pi.md)**.
+
 ## Releases
 
 ### Downloading
@@ -206,7 +214,10 @@ backend/
   routing.py    Valhalla/OSRM routing + speed limits
   geocode.py    address search
   places.py     saved places store
-web/            single-page UI (Leaflet, no build step)
+  pi/           Raspberry Pi device: controller, screen renderer, hardware + simulator drivers
+web/            single-page UI (Leaflet, no build step); pi-sim.html is the Pi simulator
+pi/             Raspberry Pi install script, boot service, Pi-only requirements
+docs/           raspberry-pi.md
 packaging/
   build.py      builds the installer for the current OS (PyInstaller + Inno Setup / hdiutil)
   LocationSpoof.spec, entry.py   PyInstaller config and entry point

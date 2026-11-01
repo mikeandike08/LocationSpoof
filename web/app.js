@@ -691,11 +691,37 @@ function renderPlaces() {
           { class: "row-actions" },
           el("button", { title: "Teleport here", onclick: () => teleport(p.lat, p.lng) }, "➤"),
           el("button", { title: "Directions to here", onclick: () => setEndpoint("dest", { ...point, name: p.name }) }, "⇢"),
+          el(
+            "button",
+            {
+              class: p.preset ? "preset-btn on" : "preset-btn",
+              title: p.preset
+                ? `On device button ${p.preset} (Raspberry Pi build). Click to change.`
+                : "Assign to a device button (Raspberry Pi build)",
+              onclick: () => cyclePreset(p),
+            },
+            p.preset ? String(p.preset) : "#",
+          ),
           el("button", { title: "Rename", onclick: () => renamePlace(p) }, "✎"),
           el("button", { class: "del", title: "Delete", onclick: () => deletePlace(p) }, "✕"),
         ),
       ),
     );
+  }
+}
+
+// Device buttons 1-4 on the Raspberry Pi build each teleport to one saved place. Clicking cycles
+// this place through: none -> 1 -> 2 -> 3 -> 4 -> none. Taking a slot frees it from its old place.
+const PRESET_SLOTS = 4;
+
+async function cyclePreset(p) {
+  const next = ((p.preset || 0) + 1) % (PRESET_SLOTS + 1);
+  try {
+    await api(`/api/places/${p.id}`, { method: "PATCH", body: { preset: next } });
+    await loadPlaces();
+    toast(next ? `“${p.name}” is on device button ${next}` : `“${p.name}” removed from the device buttons`);
+  } catch (e) {
+    toast(e.message, "error");
   }
 }
 

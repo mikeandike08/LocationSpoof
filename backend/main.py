@@ -29,7 +29,7 @@ from backend.keepawake import SUPPORTED as KEEP_AWAKE_SUPPORTED
 from backend.keepawake import KeepAwake
 from backend.location import LocationService, PreviewSession
 from backend.paths import DATA_DIR, WEB_DIR
-from backend.places import JsonStore, PlacesStore, RoutesStore
+from backend.places import PRESET_SLOTS, JsonStore, PlacesStore, RoutesStore
 from backend.playback import RoutePlayer
 from backend.routing import FIXED_SPEEDS_KMH, Route, build_route
 
@@ -311,6 +311,7 @@ class PlacePatch(BaseModel):
     address: Optional[str] = None
     lat: Optional[float] = None
     lng: Optional[float] = None
+    preset: Optional[int] = Field(None, ge=0, le=PRESET_SLOTS)  # device button 1-4; 0 clears it
 
 
 @app.get("/api/places")

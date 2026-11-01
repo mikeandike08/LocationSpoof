@@ -29,6 +29,9 @@ class JsonStore:
             tmp.replace(self.path)
 
 
+PRESET_SLOTS = 4  # hardware buttons on the Raspberry Pi build (see backend/pi)
+
+
 class PlacesStore:
     def __init__(self) -> None:
         self.store = JsonStore("places.json", [])
@@ -57,9 +60,21 @@ class PlacesStore:
                 for key in ("name", "address", "lat", "lng"):
                     if fields.get(key) is not None:
                         place[key] = fields[key]
+                if fields.get("preset") is not None:
+                    # 1..PRESET_SLOTS assigns a button (taking it from any other place); 0 clears it.
+                    slot = fields["preset"] or None
+                    if slot is not None:
+                        for other in places:
+                            if other.get("preset") == slot:
+                                other["preset"] = None
+                    place["preset"] = slot
                 self.store.write(places)
                 return place
         return None
+
+    def presets(self) -> dict[int, dict]:
+        """Saved places assigned to preset buttons, by slot number."""
+        return {p["preset"]: p for p in self.store.read() if p.get("preset")}
 
     def delete(self, place_id: str) -> bool:
         places = self.store.read()

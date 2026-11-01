@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pi Device Simulator</title>
+  <style>
+    :root { --bg: #e9ebef; --board: #1f6f43; --text: #16181d; --muted: #5b6472; --btn: #2a2f37; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0e1013; --board: #17583a; --text: #e8eaee; --muted: #9099a6; --btn: #3a414c; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+           font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; }
+    .wrap { display: flex; flex-direction: column; gap: 12px; align-items: center; max-width: 100%; }
+    .device { background: var(--board); border-radius: 18px; padding: 18px 14px; display: grid;
+              grid-template-columns: 56px auto 56px; gap: 10px; align-items: stretch; box-shadow: 0 8px 30px rgba(0,0,0,.25); max-width: 100%; }
+    .col { display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 22px 0; }
+    .screen { width: 320px; max-width: calc(100vw - 180px); aspect-ratio: 4 / 3; background: #000; border-radius: 4px;
+              border: 6px solid #111; image-rendering: pixelated; display: block; }
+    button.hw { width: 46px; height: 46px; border-radius: 50%; border: 3px solid #0b0d10; background: var(--btn); color: #fff;
+                font-weight: 700; font-size: 15px; cursor: pointer; user-select: none; touch-action: none; }
+    button.hw:active, button.hw.down { transform: translateY(2px); filter: brightness(1.3); }
+    .led { width: 14px; height: 14px; border-radius: 50%; background: #111; border: 2px solid #0b0d10; margin: 0 auto; transition: background .15s, box-shadow .15s; }
+    .row { display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: 13px; flex-wrap: wrap; justify-content: center; }
+    .hint { max-width: 460px; text-align: center; color: var(--muted); font-size: 13px; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="device" aria-label="Simulated Raspberry Pi with a Display HAT Mini">
+      <div class="col">
+        <button class="hw" data-b="A" title="A: preset 1 (hold: real location)">A</button>
+        <button class="hw" data-b="B" title="B: preset 2 (hold: real location)">B</button>
+      </div>
+      <img id="screen" class="screen" alt="Device screen">
+      <div class="col">
+        <button class="hw" data-b="X" title="X: preset 3 (hold: real location)">X</button>
+        <div class="led" id="led" title="RGB LED"></div>
+        <button class="hw" data-b="Y" title="Y: preset 4 (hold: real location)">Y</button>
+      </div>
+    </div>
+    <div class="row"><span id="beep">Buzzer: quiet</span><span>·</span><a href="/" target="_blank" rel="noopener">Open the web app</a></div>
+    <p class="hint">Click a button to teleport to its preset; hold it for a second to restore the real location. Assign presets with the <b>#</b> button next to a saved place in the web app.</p>
+  </div>
+  <script>
+    const LONG_MS = 1000;
+    let frameId = -1, beepId = 0;
+
+    async function press(button, long) {
+      try {
+        await fetch("/api/pi-sim/button", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ button, long }) });
+      } catch { /* server gone */ }
+      // The controller handles input on its next tick (<= 250 ms): look again a few times.
+      for (const ms of [120, 300, 600]) setTimeout(poll, ms);
+    }
+
+    // Holding a button for LONG_MS fires the long press while it's still held, like the hardware driver.
+    for (const btn of document.querySelectorAll("button.hw")) {
+      let timer = null, firedLong = false;
+      const down = (e) => {
+        e.preventDefault();
+        btn.classList.add("down");
+        firedLong = false;
+        timer = setTimeout(() => { firedLong = true; press(btn.dataset.b, true); }, LONG_MS);
+      };
+      const up = () => {
+        if (timer === null) return;
+        clearTimeout(timer); timer = null;
+        btn.classList.remove("down");
+        if (!firedLong) press(btn.dataset.b, false);
+      };
+      btn.addEventListener("pointerdown", down);
+      btn.addEventListener("pointerup", up);
+      btn.addEventListener("pointerleave", up);
+      btn.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") press(btn.dataset.b, false); });
+    }
+
+    async function poll() {
+      try {
+        const s = await (await fetch("/api/pi-sim/state", { cache: "no-store" })).json();
+        if (s.frame_id !== frameId) {
+          frameId = s.frame_id;
+          document.getElementById("screen").src = `/api/pi-sim/frame.png?f=${frameId}`;
+        }
+        const [r, g, b] = s.led.map((v) => Math.round(Math.min(1, v * 2.5) * 255));
+        const led = document.getElementById("led");
+        const lit = r + g + b > 0;
+        led.style.background = lit ? `rgb(${r},${g},${b})` : "#111";
+        led.style.boxShadow = lit ? `0 0 10px rgb(${r},${g},${b})` : "none";
+        if (s.beep_id !== beepId) {
+          beepId = s.beep_id;
+          document.getElementById("beep").textContent = s.beep === "alarm" ? "Buzzer: ALARM beep-beep-beep" : "Buzzer: recovered chirp";
+        }
+      } catch { /* server restarting */ }
+    }
+    poll();
+    setInterval(poll, 250);
+  </script>
+</body>
+</html>

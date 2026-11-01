@@ -26,6 +26,11 @@ if sys.platform == "win32":
         "Windows can't talk to iPhones yet: Apple's device service isn't running. Install the Apple Devices "
         "app from the Microsoft Store (or iTunes), open it once with the iPhone plugged in, then try again."
     )
+elif sys.platform.startswith("linux"):
+    USBMUX_HINT = (
+        "The iPhone connection service (usbmuxd) isn't running. Install it (sudo apt install usbmuxd), "
+        "then unplug and replug the iPhone."
+    )
 else:
     USBMUX_HINT = (
         "The computer's iPhone connection service isn't responding. Unplug and replug the iPhone; "

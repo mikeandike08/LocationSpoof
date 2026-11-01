@@ -1,0 +1,5 @@
+# Extra packages for the Raspberry Pi build (pi/install.sh installs these on the Pi).
+# Pimoroni Display HAT Mini: 2.0" 320x240 LCD, buttons A/B/X/Y, RGB LED.
+displayhatmini>=1.0
+# Optional buzzer on a GPIO pin.
+gpiozero>=2.0
