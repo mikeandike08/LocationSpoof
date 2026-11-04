@@ -7,7 +7,12 @@ cd "$(dirname "$0")/../.."
 VERSION="${1:?version required}"
 APP=dist/LocationSpoof.app
 STAGE=build/dmg
-OUT="dist/installer/LocationSpoof-$VERSION-macOS-$(uname -m).dmg"
+case "$(uname -m)" in
+  arm64) KIND=AppleSilicon ;;
+  x86_64) KIND=Intel ;;
+  *) KIND="$(uname -m)" ;;
+esac
+OUT="dist/installer/LocationSpoof-$VERSION-macOS-$KIND.dmg"
 
 [ -d "$APP" ] || { echo "$APP not found; run PyInstaller first" >&2; exit 1; }
 rm -rf "$STAGE"

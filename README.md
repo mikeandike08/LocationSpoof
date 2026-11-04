@@ -26,11 +26,19 @@ Download the installer for your computer from the [latest release](https://githu
    - The installer isn't code-signed, so SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**.
 2. Install Apple's iPhone driver if you don't have it: the free **Apple Devices** app from the Microsoft Store, or iTunes. The installer offers a link if it's missing. Open it once with the iPhone plugged in.
 
-### macOS (Apple Silicon)
-1. Open `LocationSpoof-<version>-macOS-arm64.dmg` and drag LocationSpoof to **Applications**.
+### macOS
+There are two disk images. To tell which Mac you have, open  → **About This Mac**: "Chip: Apple M…" means Apple Silicon, "Processor: Intel…" means Intel.
+
+| Your Mac | File | Needs |
+|---|---|---|
+| Apple Silicon (M1 or newer) | `LocationSpoof-<version>-macOS-AppleSilicon.dmg` | macOS 11 Big Sur or later |
+| Intel | `LocationSpoof-<version>-macOS-Intel.dmg` | macOS 10.15 Catalina or later |
+
+The Intel version also runs on Apple Silicon (through Rosetta), but the Apple Silicon one is faster there.
+
+1. Open the `.dmg` and drag LocationSpoof to **Applications**.
 2. The app isn't notarized. The first time, right-click it and choose **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
 
-Intel Macs aren't supported by the installer; [run from source](#run-from-source) instead.
 
 ### Using the app
 - LocationSpoof runs in the background with a map-pin icon in the **system tray** (Windows, possibly under the **^** arrow) or the **menu bar** (macOS). It opens in your browser.
@@ -154,7 +162,8 @@ Every version is on the [Releases page](https://github.com/mikeandike08/Location
 | Your computer | File |
 |---|---|
 | Windows 10 / 11 (64-bit) | `LocationSpoof-Setup-<version>.exe` |
-| Mac with Apple Silicon (M1 or newer) | `LocationSpoof-<version>-macOS-arm64.dmg` |
+| Mac with Apple Silicon (M1 or newer), macOS 11+ | `LocationSpoof-<version>-macOS-AppleSilicon.dmg` |
+| Intel Mac, macOS 10.15+ | `LocationSpoof-<version>-macOS-Intel.dmg` |
 
 Ignore the "Source code" downloads unless you want to [run from source](#run-from-source). Then follow [Install](#install).
 
@@ -169,7 +178,7 @@ Installers are built by GitHub Actions ([`installers.yml`](.github/workflows/ins
    git tag v0.3.1
    git push origin v0.3.1
    ```
-3. **Wait about 10 minutes** while the [Actions](https://github.com/mikeandike08/LocationSpoof/actions) run builds the Windows installer and the macOS disk image. Each build launches the bundled app in a self-check mode and fails if it doesn't start, so a broken bundle never gets attached.
+3. **Wait about 10 minutes** while the [Actions](https://github.com/mikeandike08/LocationSpoof/actions) run builds the Windows installer and both macOS disk images (Apple Silicon and Intel). Each build launches the bundled app in a self-check mode and fails if it doesn't start, and the Mac builds also fail if any bundled file needs a newer macOS than promised, so a broken bundle never gets attached.
 4. **Review the draft.** When the run is green, a **draft** release for the tag appears on the [Releases page](https://github.com/mikeandike08/LocationSpoof/releases) (only you can see drafts) with both files attached. Download them and try them, ideally on a clean machine.
 5. **Publish.** Click **Edit**, add release notes (what changed), and click **Publish release**. It becomes **Latest**, and the download link at the top of this README points to it.
 

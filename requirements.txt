@@ -1,7 +1,11 @@
 pymobiledevice3>=11.23
 fastapi>=0.142
-uvicorn[standard]>=0.54
+# Plain uvicorn, not uvicorn[standard]: its httptools speed-up needs macOS 11+, and a local one-user
+# server doesn't need it (uvicorn falls back to the pure-Python h11 parser).
+uvicorn>=0.54
 httpx>=0.28
 packaging
 pystray>=0.19
 pillow>=10
+# cryptography 49+ ships no Intel Mac build (arm64 only); 48.0.1 is the last universal2 one.
+cryptography<49; sys_platform == "darwin" and platform_machine == "x86_64"

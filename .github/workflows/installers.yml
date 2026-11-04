@@ -1,4 +1,4 @@
-# Builds the Windows installer (.exe) and the macOS disk image (.dmg).
+# Builds the Windows installer (.exe) and the macOS disk images (.dmg: Apple Silicon and Intel).
 #   - Run it by hand from the Actions tab: installers are attached to the run as artifacts.
 #   - Push a version tag (git tag v0.3.0 && git push origin v0.3.0): they're also attached to a
 #     draft GitHub Release, which you review and publish yourself.
@@ -9,6 +9,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+env:
+  # python.org's macOS installer (universal2, supports macOS 10.13+). 3.13: on 3.12 and older the
+  # iOS 17.4+ tunnel needs sslpsk_pmd3 (its Windows build is broken); 3.14 has no pylzss wheel yet.
+  PYTHON_ORG_VERSION: "3.13.15"
+
 jobs:
   build:
     strategy:
@@ -17,17 +22,39 @@ jobs:
         include:
           - os: windows-latest
             name: windows
-          - os: macos-latest  # Apple Silicon
-            name: macos-arm64
+            macos_min: ""
+          # Every Apple Silicon Mac runs macOS 11+.
+          - os: macos-latest
+            name: macos-apple-silicon
+            macos_min: "11.0"
+          # Intel: macOS 10.15 Catalina+ (cffi has no older Intel build; see requirements.txt for the
+          # other Intel-specific pins). Also runs on Apple Silicon through Rosetta.
+          - os: macos-15-intel
+            name: macos-intel
+            macos_min: "10.15"
     runs-on: ${{ matrix.os }}
+    env:
+      # Binaries compiled during the build target this macOS; packaging/build.py fails if any
+      # bundled binary needs a newer one, and it's written into the app as LSMinimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_min }}
     steps:
       - uses: actions/checkout@v4
 
-      # 3.13: on 3.12 and older the iOS 17.4+ tunnel needs sslpsk_pmd3 (its Windows build is broken);
-      # 3.14 has no pylzss wheel yet. 3.13 uses Python's own ssl for the tunnel.
       - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
         with:
           python-version: "3.13"
+
+      # On macOS, use python.org's official Python: a Python built on the CI machine would only run on
+      # that machine's macOS version or newer, and so would the app.
+      - name: Install Python from python.org
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSLo python.pkg "https://www.python.org/ftp/python/${PYTHON_ORG_VERSION}/python-${PYTHON_ORG_VERSION}-macos11.pkg"
+          sudo installer -pkg python.pkg -target /
+          /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/venv/bin/python" -c "import platform, sysconfig; print('Python', platform.python_version(), platform.machine(), '- built for macOS', sysconfig.get_config_var('MACOSX_DEPLOYMENT_TARGET'))"
 
       - name: Install dependencies
         run: |
@@ -69,4 +96,8 @@ jobs:
           body: |
             **Windows:** run `LocationSpoof-Setup-*.exe`. Windows SmartScreen may say "Windows protected your PC" because the installer isn't code-signed: click **More info → Run anyway**. You also need Apple's iPhone driver (the free **Apple Devices** app from the Microsoft Store, or iTunes); the installer offers a link if it's missing.
 
-            **macOS (Apple Silicon):** open the `.dmg` and drag LocationSpoof to Applications. The app isn't notarized, so the first time, right-click it and choose **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.
+            **macOS:** pick the disk image for your Mac ( → About This Mac: "Chip: Apple M…" = Apple Silicon, "Processor: Intel…" = Intel):
+            - `LocationSpoof-*-macOS-AppleSilicon.dmg`: M1 or newer, macOS 11 Big Sur or later.
+            - `LocationSpoof-*-macOS-Intel.dmg`: Intel Macs, macOS 10.15 Catalina or later. Also runs on Apple Silicon (through Rosetta).
+
+            Open the `.dmg` and drag LocationSpoof to Applications. The app isn't notarized, so the first time, right-click it and choose **Open**, or allow it under System Settings → Privacy & Security → **Open Anyway**.

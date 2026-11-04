@@ -11,6 +11,7 @@ Installers can't be cross-built: run this on each OS (CI does both, see .github/
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -84,6 +85,60 @@ def windows_installer(version: str) -> None:
     )
 
 
+def _macos_version(text: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in text.split("."))
+
+
+def _min_macos_versions(otool_output: str) -> list[str]:
+    """The minimum-macOS values in `otool -l` output: only LC_BUILD_VERSION (minos) and
+    LC_VERSION_MIN_MACOSX (version). Other load commands have "version" lines too (e.g.
+    LC_SOURCE_VERSION), which aren't macOS versions."""
+    found = []
+    for block in otool_output.split("Load command")[1:]:
+        if re.search(r"^\s*cmd LC_BUILD_VERSION$", block, re.M):
+            # platform 1 = macOS; skip iOS/simulator slices if any
+            if re.search(r"^\s*platform (1|MACOS)$", block, re.M):
+                found += re.findall(r"^\s*minos (\d+(?:\.\d+)*)$", block, re.M)
+        elif re.search(r"^\s*cmd LC_VERSION_MIN_MACOSX$", block, re.M):
+            found += re.findall(r"^\s*version (\d+(?:\.\d+)*)$", block, re.M)
+    return found
+
+
+def check_macos_minimum() -> None:
+    """Fail the build if any binary in the .app needs a newer macOS than we promise (MACOSX_DEPLOYMENT_TARGET).
+
+    Each compiled file records the oldest macOS it runs on (LC_BUILD_VERSION "minos", or the older
+    LC_VERSION_MIN_MACOSX "version"). One dependency built for a newer macOS is enough to make the whole
+    app crash on older Macs, so check them all.
+    """
+    target = os.environ.get("MACOSX_DEPLOYMENT_TARGET", "11.0")
+    app = DIST / "LocationSpoof.app"
+    newest: dict[str, str] = {}
+    for path in app.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix not in (".so", ".dylib") and not os.access(path, os.X_OK) and path.name != "Python":
+            continue
+        result = subprocess.run(["otool", "-l", str(path)], capture_output=True, text=True)
+        if result.returncode != 0 or "Load command" not in result.stdout:
+            continue  # not a Mach-O binary
+        versions = _min_macos_versions(result.stdout)
+        if versions:
+            newest[str(path.relative_to(app))] = max(versions, key=_macos_version)
+    if not newest:
+        sys.exit("No Mach-O binaries found in the app; is it built?")
+    too_new = {p: v for p, v in newest.items() if _macos_version(v) > _macos_version(target)}
+    overall = max(newest.values(), key=_macos_version)
+    arch = subprocess.run(["lipo", "-archs", str(app / "Contents" / "MacOS" / "LocationSpoof")],
+                          capture_output=True, text=True).stdout.strip()
+    print(f"macOS check: {len(newest)} binaries, architectures [{arch}], oldest supported macOS = {overall} "
+          f"(target {target})")
+    if too_new:
+        for p, v in sorted(too_new.items(), key=lambda kv: _macos_version(kv[1]), reverse=True)[:15]:
+            print(f"  needs macOS {v}: {p}")
+        sys.exit(f"{len(too_new)} binaries need a newer macOS than {target}; pin an older dependency or raise the target")
+
+
 def mac_dmg(version: str) -> None:
     subprocess.run(["bash", str(ROOT / "packaging" / "macos" / "make_dmg.sh"), version], check=True)
 
@@ -102,6 +157,8 @@ def main() -> None:
     make_icons()
     if not args.skip_app:
         pyinstaller()
+    if sys.platform == "darwin":
+        check_macos_minimum()
     smoke_test()
     if sys.platform == "win32":
         windows_installer(version)

@@ -3,6 +3,7 @@
 #   macOS:   dist/LocationSpoof.app                (wrapped by packaging/macos/make_dmg.sh)
 # A folder build (not one-file) so the app starts fast and the installers can ship it as-is.
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,6 +13,9 @@ ROOT = Path(SPECPATH).parent
 ICONS = ROOT / "build" / "icons"
 sys.path.insert(0, str(ROOT))
 from backend.version import __version__  # noqa: E402
+
+# Oldest macOS the app supports (see packaging/build.py, which checks the bundle really meets it).
+MACOS_MIN = os.environ.get("MACOSX_DEPLOYMENT_TARGET", "11.0")
 
 datas = [(str(ROOT / "web"), "web")]
 binaries = []
@@ -69,6 +73,7 @@ if sys.platform == "darwin":
             "CFBundleShortVersionString": __version__,
             "CFBundleVersion": __version__,
             "LSUIElement": True,  # menu-bar app: no Dock icon
+            "LSMinimumSystemVersion": MACOS_MIN,  # older Macs get a clear message instead of a crash
             "NSHighResolutionCapable": True,
         },
     )
